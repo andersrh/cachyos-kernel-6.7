@@ -1,33 +1,33 @@
-From 9b38f9deef7951dc16e99f2e67d25b38249a6545 Mon Sep 17 00:00:00 2001
+From 18201e2423713dad17317a27169d46cbdf6649c3 Mon Sep 17 00:00:00 2001
 From: Peter Jung <admin@ptr1337.dev>
-Date: Wed, 29 Nov 2023 19:55:12 +0100
-Subject: [PATCH 1/7] amd-hdr
+Date: Fri, 22 Dec 2023 17:52:44 +0100
+Subject: [PATCH 1/8] amd-hdr
 
 Signed-off-by: Peter Jung <admin@ptr1337.dev>
 ---
  drivers/gpu/drm/amd/amdgpu/amdgpu_mode.h      |  71 ++
- .../gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c |  34 +-
- .../gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.h | 100 +++
- .../amd/display/amdgpu_dm/amdgpu_dm_color.c   | 805 ++++++++++++++++--
- .../amd/display/amdgpu_dm/amdgpu_dm_crtc.c    |  72 ++
- .../amd/display/amdgpu_dm/amdgpu_dm_plane.c   | 224 ++++-
+ drivers/gpu/drm/amd/display/Kconfig           |   7 +
+ .../gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c |  69 +-
+ .../gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.h |  94 +++
+ .../amd/display/amdgpu_dm/amdgpu_dm_color.c   | 718 ++++++++++++++++--
+ .../amd/display/amdgpu_dm/amdgpu_dm_crtc.c    |  73 +-
+ .../amd/display/amdgpu_dm/amdgpu_dm_plane.c   | 228 +++++-
  .../amd/display/dc/dcn10/dcn10_cm_common.c    |  95 ++-
- .../drm/amd/display/dc/dcn30/dcn30_hwseq.c    |  37 +
- .../drm/amd/display/dc/dcn30/dcn30_hwseq.h    |   3 +
- .../drm/amd/display/dc/dcn301/dcn301_init.c   |   2 +-
+ .../amd/display/dc/hwss/dcn10/dcn10_hwseq.c   |  14 +-
  .../gpu/drm/amd/display/include/fixed31_32.h  |  12 +
  drivers/gpu/drm/arm/malidp_crtc.c             |   2 +-
  drivers/gpu/drm/drm_atomic.c                  |   1 +
  drivers/gpu/drm/drm_atomic_state_helper.c     |   1 +
+ drivers/gpu/drm/drm_atomic_uapi.c             |  52 +-
  drivers/gpu/drm/drm_property.c                |  49 ++
  include/drm/drm_mode_object.h                 |   2 +-
  include/drm/drm_plane.h                       |   7 +
  include/drm/drm_property.h                    |   6 +
  include/uapi/drm/drm_mode.h                   |   8 +
- 19 files changed, 1441 insertions(+), 90 deletions(-)
+ 19 files changed, 1364 insertions(+), 145 deletions(-)
 
 diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu_mode.h b/drivers/gpu/drm/amd/amdgpu/amdgpu_mode.h
-index 32fe05c810c6..84bf501b02f4 100644
+index 32fe05c810c6..60440a31142a 100644
 --- a/drivers/gpu/drm/amd/amdgpu/amdgpu_mode.h
 +++ b/drivers/gpu/drm/amd/amdgpu/amdgpu_mode.h
 @@ -343,6 +343,77 @@ struct amdgpu_mode_info {
@@ -37,8 +37,13 @@ index 32fe05c810c6..84bf501b02f4 100644
 +
 +	/* Driver-private color mgmt props */
 +
++	/* @regamma_tf_property: Transfer function for CRTC regamma
++	 * (post-blending). Possible values are defined by `enum
++	 * amdgpu_transfer_function`.
++	 */
++	struct drm_property *regamma_tf_property;
 +	/* @plane_degamma_lut_property: Plane property to set a degamma LUT to
-+	 * convert input space before blending.
++	 * convert color space before blending.
 +	 */
 +	struct drm_property *plane_degamma_lut_property;
 +	/* @plane_degamma_lut_size_property: Plane property to define the max
@@ -46,8 +51,8 @@ index 32fe05c810c6..84bf501b02f4 100644
 +	 */
 +	struct drm_property *plane_degamma_lut_size_property;
 +	/**
-+	 * @plane_degamma_tf_property: Plane pre-defined transfer function to
-+	 * to go from scanout/encoded values to linear values.
++	 * @plane_degamma_tf_property: Predefined transfer function to
++	 * linearize content with or without LUT.
 +	 */
 +	struct drm_property *plane_degamma_tf_property;
 +	/**
@@ -100,23 +105,42 @@ index 32fe05c810c6..84bf501b02f4 100644
 +	 * with or without LUT.
 +	 */
 +	struct drm_property *plane_blend_tf_property;
-+	/* @regamma_tf_property: Transfer function for CRTC regamma
-+	 * (post-blending). Possible values are defined by `enum
-+	 * amdgpu_transfer_function`.
-+	 */
-+	struct drm_property *regamma_tf_property;
  };
  
  #define AMDGPU_MAX_BL_LEVEL 0xFF
+diff --git a/drivers/gpu/drm/amd/display/Kconfig b/drivers/gpu/drm/amd/display/Kconfig
+index 901d1961b739..49523fa82f92 100644
+--- a/drivers/gpu/drm/amd/display/Kconfig
++++ b/drivers/gpu/drm/amd/display/Kconfig
+@@ -51,4 +51,11 @@ config DRM_AMD_SECURE_DISPLAY
+ 	  This option enables the calculation of crc of specific region via
+ 	  debugfs. Cooperate with specific DMCU FW.
+ 
++config DRM_AMD_COLOR_STEAMDECK
++	bool "Enable color calibration features for Steam Deck"
++	depends on DRM_AMD_DC
++	help
++	  Choose this option if you want to use AMDGPU features for broader
++	  color management support on Steam Deck.
++
+ endmenu
 diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
-index f5fdb61c821d..b8c82ca5f3a1 100644
+index c8c00c2a5224..ce80a172ca4a 100644
 --- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
 +++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
-@@ -4022,6 +4022,11 @@ static int amdgpu_dm_mode_config_init(struct amdgpu_device *adev)
+@@ -2969,6 +2969,7 @@ static int dm_resume(void *handle)
+ 			dc_stream_release(dm_new_crtc_state->stream);
+ 			dm_new_crtc_state->stream = NULL;
+ 		}
++		dm_new_crtc_state->base.color_mgmt_changed = true;
+ 	}
+ 
+ 	for_each_new_plane_in_state(dm->cached_state, plane, new_plane_state, i) {
+@@ -4029,6 +4030,11 @@ static int amdgpu_dm_mode_config_init(struct amdgpu_device *adev)
  		return r;
  	}
  
-+#ifdef AMD_PRIVATE_COLOR
++#ifdef CONFIG_DRM_AMD_COLOR_STEAMDECK
 +	if (amdgpu_dm_create_color_properties(adev))
 +		return -ENOMEM;
 +#endif
@@ -124,7 +148,7 @@ index f5fdb61c821d..b8c82ca5f3a1 100644
  	r = amdgpu_dm_audio_init(adev);
  	if (r) {
  		dc_release_state(state->context);
-@@ -5094,7 +5099,9 @@ static int fill_dc_plane_attributes(struct amdgpu_device *adev,
+@@ -5106,7 +5112,9 @@ static int fill_dc_plane_attributes(struct amdgpu_device *adev,
  	 * Always set input transfer function, since plane state is refreshed
  	 * every time.
  	 */
@@ -135,7 +159,16 @@ index f5fdb61c821d..b8c82ca5f3a1 100644
  	if (ret)
  		return ret;
  
-@@ -8119,6 +8126,10 @@ static void amdgpu_dm_commit_planes(struct drm_atomic_state *state,
+@@ -8112,7 +8120,7 @@ static void amdgpu_dm_commit_planes(struct drm_atomic_state *state,
+ 	int planes_count = 0, vpos, hpos;
+ 	unsigned long flags;
+ 	u32 target_vblank, last_flip_vblank;
+-	bool vrr_active = amdgpu_dm_crtc_vrr_active(acrtc_state);
++	bool vrr_active = true;//amdgpu_dm_crtc_vrr_active(acrtc_state);
+ 	bool cursor_update = false;
+ 	bool pflip_present = false;
+ 	bool dirty_rects_changed = false;
+@@ -8174,6 +8182,10 @@ static void amdgpu_dm_commit_planes(struct drm_atomic_state *state,
  			bundle->surface_updates[planes_count].gamma = dc_plane->gamma_correction;
  			bundle->surface_updates[planes_count].in_transfer_func = dc_plane->in_transfer_func;
  			bundle->surface_updates[planes_count].gamut_remap_matrix = &dc_plane->gamut_remap_matrix;
@@ -146,7 +179,7 @@ index f5fdb61c821d..b8c82ca5f3a1 100644
  		}
  
  		amdgpu_dm_plane_fill_dc_scaling_info(dm->adev, new_plane_state,
-@@ -8330,6 +8341,10 @@ static void amdgpu_dm_commit_planes(struct drm_atomic_state *state,
+@@ -8385,6 +8397,10 @@ static void amdgpu_dm_commit_planes(struct drm_atomic_state *state,
  				&acrtc_state->stream->csc_color_matrix;
  			bundle->stream_update.out_transfer_func =
  				acrtc_state->stream->out_transfer_func;
@@ -157,7 +190,7 @@ index f5fdb61c821d..b8c82ca5f3a1 100644
  		}
  
  		acrtc_state->stream->abm_level = acrtc_state->abm_level;
-@@ -9518,6 +9533,7 @@ static int dm_update_crtc_state(struct amdgpu_display_manager *dm,
+@@ -9586,6 +9602,7 @@ static int dm_update_crtc_state(struct amdgpu_display_manager *dm,
  	 * when a modeset is needed, to ensure it gets reprogrammed.
  	 */
  	if (dm_new_crtc_state->base.color_mgmt_changed ||
@@ -165,7 +198,7 @@ index f5fdb61c821d..b8c82ca5f3a1 100644
  	    drm_atomic_crtc_needs_modeset(new_crtc_state)) {
  		ret = amdgpu_dm_update_crtc_color_mgmt(dm_new_crtc_state);
  		if (ret)
-@@ -9585,6 +9601,10 @@ static bool should_reset_plane(struct drm_atomic_state *state,
+@@ -9653,6 +9670,10 @@ static bool should_reset_plane(struct drm_atomic_state *state,
  	 */
  	for_each_oldnew_plane_in_state(state, other, old_other_state, new_other_state, i) {
  		struct amdgpu_framebuffer *old_afb, *new_afb;
@@ -176,7 +209,7 @@ index f5fdb61c821d..b8c82ca5f3a1 100644
  
  		if (other->type == DRM_PLANE_TYPE_CURSOR)
  			continue;
-@@ -9621,6 +9641,18 @@ static bool should_reset_plane(struct drm_atomic_state *state,
+@@ -9689,6 +9710,18 @@ static bool should_reset_plane(struct drm_atomic_state *state,
  		    old_other_state->color_encoding != new_other_state->color_encoding)
  			return true;
  
@@ -195,40 +228,80 @@ index f5fdb61c821d..b8c82ca5f3a1 100644
  		/* Framebuffer checks fall at the end. */
  		if (!old_other_state->fb || !new_other_state->fb)
  			continue;
+@@ -10182,6 +10215,21 @@ static int amdgpu_dm_atomic_check(struct drm_device *dev,
+ 			}
+ 		}
+ 	}
++
++	/* Propogate CM reset state */
++	for_each_oldnew_crtc_in_state(state, crtc, old_crtc_state, new_crtc_state, i) {
++		dm_old_crtc_state = to_dm_crtc_state(old_crtc_state);
++		dm_new_crtc_state = to_dm_crtc_state(new_crtc_state);
++
++		if (dm_old_crtc_state->cm_needs_reset || dm_new_crtc_state->cm_needs_reset)
++		{
++			dm_old_crtc_state->cm_needs_reset = false;
++			dm_new_crtc_state->cm_needs_reset = false;
++
++			dm_new_crtc_state->base.color_mgmt_changed = true;
++		}
++	}
++
+ 	for_each_oldnew_crtc_in_state(state, crtc, old_crtc_state, new_crtc_state, i) {
+ 		dm_old_crtc_state = to_dm_crtc_state(old_crtc_state);
+ 
+@@ -10543,6 +10591,23 @@ static int amdgpu_dm_atomic_check(struct drm_device *dev,
+ 	return ret;
+ 
+ fail:
++	for_each_oldnew_crtc_in_state(state, crtc, old_crtc_state, new_crtc_state, i) {
++		/*
++		 * If we failed our commit, if our new crtc was dirty color-wise, make sure we forward that
++		 * dirty bit on our old state now so we don't forget to revert the work we did before
++		 * we failed this commit on the next commit.
++		 *
++		 * Store it on old and new state so we don't lose track of it for this CRTC.
++		 */
++		dm_old_crtc_state = to_dm_crtc_state(old_crtc_state);
++		dm_new_crtc_state = to_dm_crtc_state(new_crtc_state);
++
++		if (new_crtc_state->color_mgmt_changed) {
++			dm_old_crtc_state->cm_needs_reset = true;
++			dm_new_crtc_state->cm_needs_reset = true;
++		}
++	}
++
+ 	if (ret == -EDEADLK)
+ 		DRM_DEBUG_DRIVER("Atomic check stopped to avoid deadlock.\n");
+ 	else if (ret == -EINTR || ret == -EAGAIN || ret == -ERESTARTSYS)
 diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.h b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.h
-index 9e4cc5eeda76..24c87f425afb 100644
+index 3d480be802cb..71936638d820 100644
 --- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.h
 +++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.h
-@@ -33,6 +33,8 @@
- #include <drm/drm_plane.h>
- #include "link_service_types.h"
- 
+@@ -54,6 +54,7 @@
+ #define HDMI_AMD_VENDOR_SPECIFIC_DATA_BLOCK_IEEE_REGISTRATION_ID 0x00001A
+ #define AMD_VSDB_VERSION_3_FEATURECAP_REPLAYMODE 0x40
+ #define HDMI_AMD_VENDOR_SPECIFIC_DATA_BLOCK_VERSION_3 0x3
 +#define AMDGPU_HDR_MULT_DEFAULT (0x100000000LL)
-+
  /*
-  * This file contains the definition for amdgpu_display_manager
-  * and its API for amdgpu driver's use.
-@@ -716,9 +718,91 @@ static inline void amdgpu_dm_set_mst_status(uint8_t *status,
+ #include "include/amdgpu_dal_power_if.h"
+ #include "amdgpu_dm_irq.h"
+@@ -716,9 +717,85 @@ static inline void amdgpu_dm_set_mst_status(uint8_t *status,
  
  extern const struct amdgpu_ip_block_version dm_ip_block;
  
 +enum amdgpu_transfer_function {
 +	AMDGPU_TRANSFER_FUNCTION_DEFAULT,
-+	AMDGPU_TRANSFER_FUNCTION_SRGB_EOTF,
-+	AMDGPU_TRANSFER_FUNCTION_BT709_EOTF,
-+	AMDGPU_TRANSFER_FUNCTION_PQ_EOTF,
++	AMDGPU_TRANSFER_FUNCTION_SRGB,
++	AMDGPU_TRANSFER_FUNCTION_BT709,
++	AMDGPU_TRANSFER_FUNCTION_PQ,
 +	AMDGPU_TRANSFER_FUNCTION_LINEAR,
 +	AMDGPU_TRANSFER_FUNCTION_UNITY,
-+	AMDGPU_TRANSFER_FUNCTION_GAMMA22_EOTF,
-+	AMDGPU_TRANSFER_FUNCTION_GAMMA24_EOTF,
-+	AMDGPU_TRANSFER_FUNCTION_GAMMA26_EOTF,
-+	AMDGPU_TRANSFER_FUNCTION_SRGB_INV_EOTF,
-+	AMDGPU_TRANSFER_FUNCTION_BT709_INV_EOTF,
-+	AMDGPU_TRANSFER_FUNCTION_PQ_INV_EOTF,
-+	AMDGPU_TRANSFER_FUNCTION_GAMMA22_INV_EOTF,
-+	AMDGPU_TRANSFER_FUNCTION_GAMMA24_INV_EOTF,
-+	AMDGPU_TRANSFER_FUNCTION_GAMMA26_INV_EOTF,
-+        AMDGPU_TRANSFER_FUNCTION_COUNT
++	AMDGPU_TRANSFER_FUNCTION_HLG,
++	AMDGPU_TRANSFER_FUNCTION_GAMMA22,
++	AMDGPU_TRANSFER_FUNCTION_GAMMA24,
++	AMDGPU_TRANSFER_FUNCTION_GAMMA26,
++	AMDGPU_TRANSFER_FUNCTION_MAX,
 +};
 +
  struct dm_plane_state {
@@ -239,8 +312,7 @@ index 9e4cc5eeda76..24c87f425afb 100644
 +	/**
 +	 * @degamma_lut:
 +	 *
-+	 * 1D LUT for mapping framebuffer/plane pixel data before sampling or
-+	 * blending operations. It's usually applied to linearize input space.
++	 * LUT for converting plane pixel data before going into plane merger.
 +	 * The blob (if not NULL) is an array of &struct drm_color_lut.
 +	 */
 +	struct drm_property_blob *degamma_lut;
@@ -300,10 +372,11 @@ index 9e4cc5eeda76..24c87f425afb 100644
  };
  
  struct dm_crtc_state {
-@@ -743,6 +827,14 @@ struct dm_crtc_state {
+@@ -743,6 +820,15 @@ struct dm_crtc_state {
  	struct dc_info_packet vrr_infopacket;
  
  	int abm_level;
++	bool cm_needs_reset;
 +
 +        /**
 +	 * @regamma_tf:
@@ -315,7 +388,7 @@ index 9e4cc5eeda76..24c87f425afb 100644
  };
  
  #define to_dm_crtc_state(x) container_of(x, struct dm_crtc_state, base)
-@@ -804,14 +896,22 @@ void amdgpu_dm_update_freesync_caps(struct drm_connector *connector,
+@@ -804,14 +890,22 @@ void amdgpu_dm_update_freesync_caps(struct drm_connector *connector,
  
  void amdgpu_dm_trigger_timing_sync(struct drm_device *dev);
  
@@ -339,7 +412,7 @@ index 9e4cc5eeda76..24c87f425afb 100644
  
  void amdgpu_dm_update_connector_after_detect(
 diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_color.c b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_color.c
-index a4cb23d059bd..0442eeaa9763 100644
+index a4cb23d059bd..86a2d449cf07 100644
 --- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_color.c
 +++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_color.c
 @@ -72,6 +72,7 @@
@@ -350,212 +423,133 @@ index a4cb23d059bd..0442eeaa9763 100644
  
  /**
   * amdgpu_dm_init_color_mod - Initialize the color module.
-@@ -84,6 +85,213 @@ void amdgpu_dm_init_color_mod(void)
+@@ -84,6 +85,134 @@ void amdgpu_dm_init_color_mod(void)
  	setup_x_points_distribution();
  }
  
-+#ifdef AMD_PRIVATE_COLOR
-+/* Pre-defined Transfer Functions (TF)
-+ *
-+ * AMD driver supports pre-defined mathematical functions for transferring
-+ * between encoded values and optical/linear space. Depending on HW color caps,
-+ * ROMs and curves built by the AMD color module support these transforms.
-+ *
-+ * The driver-specific color implementation exposes properties for pre-blending
-+ * degamma TF, shaper TF (before 3D LUT), and blend(dpp.ogam) TF and
-+ * post-blending regamma (mpc.ogam) TF. However, only pre-blending degamma
-+ * supports ROM curves. AMD color module uses pre-defined coefficients to build
-+ * curves for the other blocks. What can be done by each color block is
-+ * described by struct dpp_color_capsand struct mpc_color_caps.
-+ *
-+ * AMD driver-specific color API exposes the following pre-defined transfer
-+ * functions:
-+ *
-+ * - Linear/Unity: linear/identity relationship between pixel value and
-+ *   luminance value;
-+ * - Gamma 2.2, Gamma 2.4, Gamma 2.6: pure gamma functions;
-+ * - sRGB: 2.4 gamma with small initial linear section as standardized by IEC
-+ *   61966-2-1:1999;
-+ * - BT.709 (BT.1886): 2.4 gamma with differences in the dark end of the scale.
-+ *   Used in HD-TV and standardized by ITU-R BT.1886;
-+ * - PQ (Perceptual Quantizer): used for HDR display, allows luminance range
-+ *   capability of 0 to 10,000 nits; standardized by SMPTE ST 2084.
-+ *
-+ * In the driver-specific API, color block names attached to TF properties
-+ * suggest the intention regarding non-linear encoding pixel's luminance
-+ * values. As some newer encodings don't use gamma curve, we make encoding and
-+ * decoding explicit by defining an enum list of transfer functions supported
-+ * in terms of EOTF and inverse EOTF, where:
-+ *
-+ * - EOTF (electro-optical transfer function): is the transfer function to go
-+ *   from the encoded value to an optical (linear) value. De-gamma functions
-+ *   traditionally do this.
-+ * - Inverse EOTF (simply the inverse of the EOTF): is usually intended to go
-+ *   from an optical/linear space (which might have been used for blending)
-+ *   back to the encoded values. Gamma functions traditionally do this.
-+ */
-+static const char * const
-+amdgpu_transfer_function_names[] = {
-+	[AMDGPU_TRANSFER_FUNCTION_DEFAULT]		= "Default",
-+	[AMDGPU_TRANSFER_FUNCTION_LINEAR]		= "Linear",
-+	[AMDGPU_TRANSFER_FUNCTION_UNITY]		= "Unity",
-+	[AMDGPU_TRANSFER_FUNCTION_SRGB_EOTF]		= "sRGB EOTF",
-+	[AMDGPU_TRANSFER_FUNCTION_BT709_EOTF]		= "BT.709 EOTF",
-+	[AMDGPU_TRANSFER_FUNCTION_PQ_EOTF]		= "PQ EOTF",
-+	[AMDGPU_TRANSFER_FUNCTION_GAMMA22_EOTF]		= "Gamma 2.2 EOTF",
-+	[AMDGPU_TRANSFER_FUNCTION_GAMMA24_EOTF]		= "Gamma 2.4 EOTF",
-+	[AMDGPU_TRANSFER_FUNCTION_GAMMA26_EOTF]		= "Gamma 2.6 EOTF",
-+	[AMDGPU_TRANSFER_FUNCTION_SRGB_INV_EOTF]	= "sRGB inv_EOTF",
-+	[AMDGPU_TRANSFER_FUNCTION_BT709_INV_EOTF]	= "BT.709 inv_EOTF",
-+	[AMDGPU_TRANSFER_FUNCTION_PQ_INV_EOTF]		= "PQ inv_EOTF",
-+	[AMDGPU_TRANSFER_FUNCTION_GAMMA22_INV_EOTF]	= "Gamma 2.2 inv_EOTF",
-+	[AMDGPU_TRANSFER_FUNCTION_GAMMA24_INV_EOTF]	= "Gamma 2.4 inv_EOTF",
-+	[AMDGPU_TRANSFER_FUNCTION_GAMMA26_INV_EOTF]	= "Gamma 2.6 inv_EOTF",
++#ifdef CONFIG_DRM_AMD_COLOR_STEAMDECK
++static const struct drm_prop_enum_list amdgpu_transfer_function_enum_list[] = {
++	{ AMDGPU_TRANSFER_FUNCTION_DEFAULT, "Default" },
++	{ AMDGPU_TRANSFER_FUNCTION_SRGB, "sRGB" },
++	{ AMDGPU_TRANSFER_FUNCTION_BT709, "BT.709" },
++	{ AMDGPU_TRANSFER_FUNCTION_PQ, "PQ (Perceptual Quantizer)" },
++	{ AMDGPU_TRANSFER_FUNCTION_LINEAR, "Linear" },
++	{ AMDGPU_TRANSFER_FUNCTION_UNITY, "Unity" },
++	{ AMDGPU_TRANSFER_FUNCTION_HLG, "HLG (Hybrid Log Gamma)" },
++	{ AMDGPU_TRANSFER_FUNCTION_GAMMA22, "Gamma 2.2" },
++	{ AMDGPU_TRANSFER_FUNCTION_GAMMA24, "Gamma 2.4" },
++	{ AMDGPU_TRANSFER_FUNCTION_GAMMA26, "Gamma 2.6" },
 +};
-+
-+static const u32 amdgpu_eotf =
-+	BIT(AMDGPU_TRANSFER_FUNCTION_SRGB_EOTF) |
-+	BIT(AMDGPU_TRANSFER_FUNCTION_BT709_EOTF) |
-+	BIT(AMDGPU_TRANSFER_FUNCTION_PQ_EOTF) |
-+	BIT(AMDGPU_TRANSFER_FUNCTION_GAMMA22_EOTF) |
-+	BIT(AMDGPU_TRANSFER_FUNCTION_GAMMA24_EOTF) |
-+	BIT(AMDGPU_TRANSFER_FUNCTION_GAMMA26_EOTF);
-+
-+static const u32 amdgpu_inv_eotf =
-+	BIT(AMDGPU_TRANSFER_FUNCTION_SRGB_INV_EOTF) |
-+	BIT(AMDGPU_TRANSFER_FUNCTION_BT709_INV_EOTF) |
-+	BIT(AMDGPU_TRANSFER_FUNCTION_PQ_INV_EOTF) |
-+	BIT(AMDGPU_TRANSFER_FUNCTION_GAMMA22_INV_EOTF) |
-+	BIT(AMDGPU_TRANSFER_FUNCTION_GAMMA24_INV_EOTF) |
-+	BIT(AMDGPU_TRANSFER_FUNCTION_GAMMA26_INV_EOTF);
-+
-+static struct drm_property *
-+amdgpu_create_tf_property(struct drm_device *dev,
-+			  const char *name,
-+			  u32 supported_tf)
-+{
-+	u32 transfer_functions = supported_tf |
-+				 BIT(AMDGPU_TRANSFER_FUNCTION_DEFAULT) |
-+				 BIT(AMDGPU_TRANSFER_FUNCTION_LINEAR) |
-+				 BIT(AMDGPU_TRANSFER_FUNCTION_UNITY);
-+	struct drm_prop_enum_list enum_list[AMDGPU_TRANSFER_FUNCTION_COUNT];
-+	int i, len;
-+
-+	len = 0;
-+	for (i = 0; i < AMDGPU_TRANSFER_FUNCTION_COUNT; i++) {
-+		if ((transfer_functions & BIT(i)) == 0)
-+			continue;
-+
-+		enum_list[len].type = i;
-+		enum_list[len].name = amdgpu_transfer_function_names[i];
-+		len++;
-+	}
-+
-+	return drm_property_create_enum(dev, DRM_MODE_PROP_ENUM,
-+					name, enum_list, len);
-+}
 +
 +int
 +amdgpu_dm_create_color_properties(struct amdgpu_device *adev)
 +{
 +	struct drm_property *prop;
 +
++	prop = drm_property_create_enum(adev_to_drm(adev),
++					DRM_MODE_PROP_ENUM,
++					"VALVE1_CRTC_REGAMMA_TF",
++					amdgpu_transfer_function_enum_list,
++					ARRAY_SIZE(amdgpu_transfer_function_enum_list));
++	if (!prop)
++		return -ENOMEM;
++	adev->mode_info.regamma_tf_property = prop;
++
 +	prop = drm_property_create(adev_to_drm(adev),
 +				   DRM_MODE_PROP_BLOB,
-+				   "AMD_PLANE_DEGAMMA_LUT", 0);
++				   "VALVE1_PLANE_DEGAMMA_LUT", 0);
 +	if (!prop)
 +		return -ENOMEM;
 +	adev->mode_info.plane_degamma_lut_property = prop;
 +
 +	prop = drm_property_create_range(adev_to_drm(adev),
 +					 DRM_MODE_PROP_IMMUTABLE,
-+					 "AMD_PLANE_DEGAMMA_LUT_SIZE", 0, UINT_MAX);
++					 "VALVE1_PLANE_DEGAMMA_LUT_SIZE", 0, UINT_MAX);
 +	if (!prop)
 +		return -ENOMEM;
 +	adev->mode_info.plane_degamma_lut_size_property = prop;
 +
-+	prop = amdgpu_create_tf_property(adev_to_drm(adev),
-+					 "AMD_PLANE_DEGAMMA_TF",
-+					 amdgpu_eotf);
++	prop = drm_property_create_enum(adev_to_drm(adev),
++					DRM_MODE_PROP_ENUM,
++					"VALVE1_PLANE_DEGAMMA_TF",
++					amdgpu_transfer_function_enum_list,
++					ARRAY_SIZE(amdgpu_transfer_function_enum_list));
 +	if (!prop)
 +		return -ENOMEM;
 +	adev->mode_info.plane_degamma_tf_property = prop;
 +
 +	prop = drm_property_create_range(adev_to_drm(adev),
-+					 0, "AMD_PLANE_HDR_MULT", 0, U64_MAX);
++					 0, "VALVE1_PLANE_HDR_MULT", 0, U64_MAX);
 +	if (!prop)
 +		return -ENOMEM;
 +	adev->mode_info.plane_hdr_mult_property = prop;
 +
 +	prop = drm_property_create(adev_to_drm(adev),
 +				   DRM_MODE_PROP_BLOB,
-+				   "AMD_PLANE_CTM", 0);
++				   "VALVE1_PLANE_CTM", 0);
 +	if (!prop)
 +		return -ENOMEM;
 +	adev->mode_info.plane_ctm_property = prop;
 +
 +	prop = drm_property_create(adev_to_drm(adev),
 +				   DRM_MODE_PROP_BLOB,
-+				   "AMD_PLANE_SHAPER_LUT", 0);
++				   "VALVE1_PLANE_SHAPER_LUT", 0);
 +	if (!prop)
 +		return -ENOMEM;
 +	adev->mode_info.plane_shaper_lut_property = prop;
 +
 +	prop = drm_property_create_range(adev_to_drm(adev),
 +					 DRM_MODE_PROP_IMMUTABLE,
-+					 "AMD_PLANE_SHAPER_LUT_SIZE", 0, UINT_MAX);
++					 "VALVE1_PLANE_SHAPER_LUT_SIZE", 0, UINT_MAX);
 +	if (!prop)
 +		return -ENOMEM;
 +	adev->mode_info.plane_shaper_lut_size_property = prop;
 +
-+	prop = amdgpu_create_tf_property(adev_to_drm(adev),
-+					 "AMD_PLANE_SHAPER_TF",
-+					 amdgpu_inv_eotf);
++	prop = drm_property_create_enum(adev_to_drm(adev),
++					DRM_MODE_PROP_ENUM,
++					"VALVE1_PLANE_SHAPER_TF",
++					amdgpu_transfer_function_enum_list,
++					ARRAY_SIZE(amdgpu_transfer_function_enum_list));
 +	if (!prop)
 +		return -ENOMEM;
 +	adev->mode_info.plane_shaper_tf_property = prop;
 +
 +	prop = drm_property_create(adev_to_drm(adev),
 +				   DRM_MODE_PROP_BLOB,
-+				   "AMD_PLANE_LUT3D", 0);
++				   "VALVE1_PLANE_LUT3D", 0);
 +	if (!prop)
 +		return -ENOMEM;
 +	adev->mode_info.plane_lut3d_property = prop;
 +
 +	prop = drm_property_create_range(adev_to_drm(adev),
 +					 DRM_MODE_PROP_IMMUTABLE,
-+					 "AMD_PLANE_LUT3D_SIZE", 0, UINT_MAX);
++					 "VALVE1_PLANE_LUT3D_SIZE", 0, UINT_MAX);
 +	if (!prop)
 +		return -ENOMEM;
 +	adev->mode_info.plane_lut3d_size_property = prop;
 +
 +	prop = drm_property_create(adev_to_drm(adev),
 +				   DRM_MODE_PROP_BLOB,
-+				   "AMD_PLANE_BLEND_LUT", 0);
++				   "VALVE1_PLANE_BLEND_LUT", 0);
 +	if (!prop)
 +		return -ENOMEM;
 +	adev->mode_info.plane_blend_lut_property = prop;
 +
 +	prop = drm_property_create_range(adev_to_drm(adev),
 +					 DRM_MODE_PROP_IMMUTABLE,
-+					 "AMD_PLANE_BLEND_LUT_SIZE", 0, UINT_MAX);
++					 "VALVE1_PLANE_BLEND_LUT_SIZE", 0, UINT_MAX);
 +	if (!prop)
 +		return -ENOMEM;
 +	adev->mode_info.plane_blend_lut_size_property = prop;
 +
-+	prop = amdgpu_create_tf_property(adev_to_drm(adev),
-+					 "AMD_PLANE_BLEND_TF",
-+					 amdgpu_eotf);
++	prop = drm_property_create_enum(adev_to_drm(adev),
++					DRM_MODE_PROP_ENUM,
++					"VALVE1_PLANE_BLEND_TF",
++					amdgpu_transfer_function_enum_list,
++					ARRAY_SIZE(amdgpu_transfer_function_enum_list));
 +	if (!prop)
 +		return -ENOMEM;
 +	adev->mode_info.plane_blend_tf_property = prop;
-+
-+	prop = amdgpu_create_tf_property(adev_to_drm(adev),
-+					 "AMD_CRTC_REGAMMA_TF",
-+					 amdgpu_inv_eotf);
-+	if (!prop)
-+		return -ENOMEM;
-+	adev->mode_info.regamma_tf_property = prop;
 +
 +	return 0;
 +}
@@ -564,7 +558,7 @@ index a4cb23d059bd..0442eeaa9763 100644
  /**
   * __extract_blob_lut - Extracts the DRM lut and lut size from a blob.
   * @blob: DRM color mgmt property blob
-@@ -182,7 +390,6 @@ static void __drm_lut_to_dc_gamma(const struct drm_color_lut *lut,
+@@ -182,7 +311,6 @@ static void __drm_lut_to_dc_gamma(const struct drm_color_lut *lut,
  static void __drm_ctm_to_dc_matrix(const struct drm_color_ctm *ctm,
  				   struct fixed31_32 *matrix)
  {
@@ -572,7 +566,7 @@ index a4cb23d059bd..0442eeaa9763 100644
  	int i;
  
  	/*
-@@ -201,12 +408,33 @@ static void __drm_ctm_to_dc_matrix(const struct drm_color_ctm *ctm,
+@@ -201,12 +329,33 @@ static void __drm_ctm_to_dc_matrix(const struct drm_color_ctm *ctm,
  		}
  
  		/* gamut_remap_matrix[i] = ctm[i - floor(i/4)] */
@@ -611,7 +605,7 @@ index a4cb23d059bd..0442eeaa9763 100644
  	}
  }
  
-@@ -268,16 +496,18 @@ static int __set_output_tf(struct dc_transfer_func *func,
+@@ -268,16 +417,18 @@ static int __set_output_tf(struct dc_transfer_func *func,
  	struct calculate_buffer cal_buffer = {0};
  	bool res;
  
@@ -637,7 +631,7 @@ index a4cb23d059bd..0442eeaa9763 100644
  
  	if (func->tf == TRANSFER_FUNCTION_LINEAR) {
  		/*
-@@ -285,27 +515,63 @@ static int __set_output_tf(struct dc_transfer_func *func,
+@@ -285,27 +436,63 @@ static int __set_output_tf(struct dc_transfer_func *func,
  		 * on top of a linear input. But degamma params can be used
  		 * instead to simulate this.
  		 */
@@ -706,7 +700,7 @@ index a4cb23d059bd..0442eeaa9763 100644
   * @func: transfer function
   * @lut: lookup table that defines the color space
   * @lut_size: size of respective lut.
-@@ -313,27 +579,249 @@ static int __set_output_tf(struct dc_transfer_func *func,
+@@ -313,27 +500,235 @@ static int __set_output_tf(struct dc_transfer_func *func,
   * Returns:
   * 0 in case of success. -ENOMEM if fails.
   */
@@ -744,35 +738,21 @@ index a4cb23d059bd..0442eeaa9763 100644
  	return res ? 0 : -ENOMEM;
  }
  
-+static enum dc_transfer_func_predefined
-+amdgpu_tf_to_dc_tf(enum amdgpu_transfer_function tf)
++static enum dc_transfer_func_predefined amdgpu_tf_to_dc_tf(enum amdgpu_transfer_function tf)
 +{
 +	switch (tf)
 +	{
 +	default:
-+	case AMDGPU_TRANSFER_FUNCTION_DEFAULT:
-+	case AMDGPU_TRANSFER_FUNCTION_LINEAR:
-+		return TRANSFER_FUNCTION_LINEAR;
-+	case AMDGPU_TRANSFER_FUNCTION_SRGB_EOTF:
-+	case AMDGPU_TRANSFER_FUNCTION_SRGB_INV_EOTF:
-+		return TRANSFER_FUNCTION_SRGB;
-+	case AMDGPU_TRANSFER_FUNCTION_BT709_EOTF:
-+	case AMDGPU_TRANSFER_FUNCTION_BT709_INV_EOTF:
-+		return TRANSFER_FUNCTION_BT709;
-+	case AMDGPU_TRANSFER_FUNCTION_PQ_EOTF:
-+	case AMDGPU_TRANSFER_FUNCTION_PQ_INV_EOTF:
-+		return TRANSFER_FUNCTION_PQ;
-+	case AMDGPU_TRANSFER_FUNCTION_UNITY:
-+		return TRANSFER_FUNCTION_UNITY;
-+	case AMDGPU_TRANSFER_FUNCTION_GAMMA22_EOTF:
-+	case AMDGPU_TRANSFER_FUNCTION_GAMMA22_INV_EOTF:
-+		return TRANSFER_FUNCTION_GAMMA22;
-+	case AMDGPU_TRANSFER_FUNCTION_GAMMA24_EOTF:
-+	case AMDGPU_TRANSFER_FUNCTION_GAMMA24_INV_EOTF:
-+		return TRANSFER_FUNCTION_GAMMA24;
-+	case AMDGPU_TRANSFER_FUNCTION_GAMMA26_EOTF:
-+	case AMDGPU_TRANSFER_FUNCTION_GAMMA26_INV_EOTF:
-+		return TRANSFER_FUNCTION_GAMMA26;
++	case AMDGPU_TRANSFER_FUNCTION_DEFAULT:	return TRANSFER_FUNCTION_LINEAR;
++	case AMDGPU_TRANSFER_FUNCTION_SRGB:	return TRANSFER_FUNCTION_SRGB;
++	case AMDGPU_TRANSFER_FUNCTION_BT709:	return TRANSFER_FUNCTION_BT709;
++	case AMDGPU_TRANSFER_FUNCTION_PQ:	return TRANSFER_FUNCTION_PQ;
++	case AMDGPU_TRANSFER_FUNCTION_LINEAR:	return TRANSFER_FUNCTION_LINEAR;
++	case AMDGPU_TRANSFER_FUNCTION_UNITY:	return TRANSFER_FUNCTION_UNITY;
++	case AMDGPU_TRANSFER_FUNCTION_HLG:	return TRANSFER_FUNCTION_HLG;
++	case AMDGPU_TRANSFER_FUNCTION_GAMMA22:	return TRANSFER_FUNCTION_GAMMA22;
++	case AMDGPU_TRANSFER_FUNCTION_GAMMA24:	return TRANSFER_FUNCTION_GAMMA24;
++	case AMDGPU_TRANSFER_FUNCTION_GAMMA26:	return TRANSFER_FUNCTION_GAMMA26;
 +	}
 +}
 +
@@ -965,7 +945,7 @@ index a4cb23d059bd..0442eeaa9763 100644
  /**
   * amdgpu_dm_verify_lut_sizes - verifies if DRM luts match the hw supported sizes
   * @crtc_state: the DRM CRTC state
-@@ -401,9 +889,12 @@ int amdgpu_dm_update_crtc_color_mgmt(struct dm_crtc_state *crtc)
+@@ -401,9 +796,12 @@ int amdgpu_dm_update_crtc_color_mgmt(struct dm_crtc_state *crtc)
  	const struct drm_color_lut *degamma_lut, *regamma_lut;
  	uint32_t degamma_size, regamma_size;
  	bool has_regamma, has_degamma;
@@ -978,7 +958,7 @@ index a4cb23d059bd..0442eeaa9763 100644
  	r = amdgpu_dm_verify_lut_sizes(&crtc->base);
  	if (r)
  		return r;
-@@ -440,26 +931,22 @@ int amdgpu_dm_update_crtc_color_mgmt(struct dm_crtc_state *crtc)
+@@ -440,26 +838,22 @@ int amdgpu_dm_update_crtc_color_mgmt(struct dm_crtc_state *crtc)
  		stream->out_transfer_func->type = TF_TYPE_DISTRIBUTED_POINTS;
  		stream->out_transfer_func->tf = TRANSFER_FUNCTION_SRGB;
  
@@ -1015,7 +995,7 @@ index a4cb23d059bd..0442eeaa9763 100644
  	}
  
  	/*
-@@ -495,20 +982,10 @@ int amdgpu_dm_update_crtc_color_mgmt(struct dm_crtc_state *crtc)
+@@ -495,20 +889,10 @@ int amdgpu_dm_update_crtc_color_mgmt(struct dm_crtc_state *crtc)
  	return 0;
  }
  
@@ -1040,7 +1020,7 @@ index a4cb23d059bd..0442eeaa9763 100644
  {
  	const struct drm_color_lut *degamma_lut;
  	enum dc_transfer_func_predefined tf = TRANSFER_FUNCTION_SRGB;
-@@ -531,8 +1008,7 @@ int amdgpu_dm_update_plane_color_mgmt(struct dm_crtc_state *crtc,
+@@ -531,8 +915,7 @@ int amdgpu_dm_update_plane_color_mgmt(struct dm_crtc_state *crtc,
  						 &degamma_size);
  		ASSERT(degamma_size == MAX_COLOR_LUT_ENTRIES);
  
@@ -1050,7 +1030,7 @@ index a4cb23d059bd..0442eeaa9763 100644
  
  		/*
  		 * This case isn't fully correct, but also fairly
-@@ -564,11 +1040,11 @@ int amdgpu_dm_update_plane_color_mgmt(struct dm_crtc_state *crtc,
+@@ -564,11 +947,11 @@ int amdgpu_dm_update_plane_color_mgmt(struct dm_crtc_state *crtc,
  			dc_plane_state->in_transfer_func->tf =
  				TRANSFER_FUNCTION_LINEAR;
  
@@ -1064,7 +1044,7 @@ index a4cb23d059bd..0442eeaa9763 100644
  		/*
  		 * For legacy gamma support we need the regamma input
  		 * in linear space. Assume that the input is sRGB.
-@@ -577,14 +1053,213 @@ int amdgpu_dm_update_plane_color_mgmt(struct dm_crtc_state *crtc,
+@@ -577,14 +960,219 @@ int amdgpu_dm_update_plane_color_mgmt(struct dm_crtc_state *crtc,
  		dc_plane_state->in_transfer_func->tf = tf;
  
  		if (tf != TRANSFER_FUNCTION_SRGB &&
@@ -1073,11 +1053,15 @@ index a4cb23d059bd..0442eeaa9763 100644
 +		    !mod_color_calculate_degamma_params(caps,
 +							dc_plane_state->in_transfer_func,
 +							NULL, false))
-+			return -ENOMEM;
-+	}
-+
-+	return 0;
-+}
+ 			return -ENOMEM;
+-	} else {
+-		/* ...Otherwise we can just bypass the DGM block. */
+-		dc_plane_state->in_transfer_func->type = TF_TYPE_BYPASS;
+-		dc_plane_state->in_transfer_func->tf = TRANSFER_FUNCTION_LINEAR;
+ 	}
+ 
+ 	return 0;
+ }
 +
 +static int
 +__set_dm_plane_degamma(struct drm_plane_state *plane_state,
@@ -1123,11 +1107,7 @@ index a4cb23d059bd..0442eeaa9763 100644
 +
 +		if (!mod_color_calculate_degamma_params(color_caps,
 +		    dc_plane_state->in_transfer_func, NULL, false))
- 			return -ENOMEM;
--	} else {
--		/* ...Otherwise we can just bypass the DGM block. */
--		dc_plane_state->in_transfer_func->type = TF_TYPE_BYPASS;
--		dc_plane_state->in_transfer_func->tf = TRANSFER_FUNCTION_LINEAR;
++			return -ENOMEM;
 +	}
 +	return 0;
 +}
@@ -1145,8 +1125,15 @@ index a4cb23d059bd..0442eeaa9763 100644
 +	int ret;
 +
 +	/* We have nothing to do here, return */
++	/*
++	 * JoshA: WE HAVE TO DO THIS EVERY TIME.
++	 * It's on a new dc_plane_state allocation, none of this data is here!
++	 * !!!!!!!!
++	 * This was always true before we duped properties due to LUCK and the
++	 * properties matching.
 +	if (!plane_state->color_mgmt_changed)
 +		return 0;
++	*/
 +
 +	dc_plane_state->hdr_mult = dc_fixpt_from_s3132(dm_plane_state->hdr_mult);
 +
@@ -1165,7 +1152,6 @@ index a4cb23d059bd..0442eeaa9763 100644
 +		drm_dbg_kms(plane_state->plane->dev,
 +			    "setting plane %d shaper LUT failed.\n",
 +			    plane_state->plane->index);
-+
 +		return ret;
 +	}
 +
@@ -1182,10 +1168,10 @@ index a4cb23d059bd..0442eeaa9763 100644
 +			    plane_state->plane->index);
 +
 +		return ret;
- 	}
- 
- 	return 0;
- }
++	}
++
++	return 0;
++}
 +
 +/**
 + * amdgpu_dm_update_plane_color_mgmt: Maps DRM color management to DC plane.
@@ -1285,30 +1271,40 @@ index a4cb23d059bd..0442eeaa9763 100644
 +						    dc_plane_state, color_caps);
 +}
 diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_crtc.c b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_crtc.c
-index 97b7a0b8a1c2..a05c210754d4 100644
+index cb0b48bb2a7d..b131f9465761 100644
 --- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_crtc.c
 +++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_crtc.c
-@@ -260,6 +260,7 @@ static struct drm_crtc_state *dm_crtc_duplicate_state(struct drm_crtc *crtc)
+@@ -226,7 +226,6 @@ static void amdgpu_dm_crtc_destroy_state(struct drm_crtc *crtc,
+ 	if (cur->stream)
+ 		dc_stream_release(cur->stream);
+ 
+-
+ 	__drm_atomic_helper_crtc_destroy_state(state);
+ 
+ 
+@@ -260,8 +259,10 @@ static struct drm_crtc_state *amdgpu_dm_crtc_duplicate_state(struct drm_crtc *cr
  	state->freesync_config = cur->freesync_config;
  	state->cm_has_degamma = cur->cm_has_degamma;
  	state->cm_is_degamma_srgb = cur->cm_is_degamma_srgb;
 +	state->regamma_tf = cur->regamma_tf;
  	state->crc_skip_count = cur->crc_skip_count;
  	state->mpo_requested = cur->mpo_requested;
++	state->cm_needs_reset = cur->cm_needs_reset;
  	/* TODO Duplicate dc_stream after objects are stream object is flattened */
-@@ -296,6 +297,70 @@ static int amdgpu_dm_crtc_late_register(struct drm_crtc *crtc)
+ 
+ 	return &state->base;
+@@ -296,6 +297,69 @@ static int amdgpu_dm_crtc_late_register(struct drm_crtc *crtc)
  }
  #endif
  
-+#ifdef AMD_PRIVATE_COLOR
++#ifdef CONFIG_DRM_AMD_COLOR_STEAMDECK
 +/**
 + * drm_crtc_additional_color_mgmt - enable additional color properties
 + * @crtc: DRM CRTC
 + *
-+ * This function lets the driver enable post-blending CRTC regamma transfer
-+ * function property in addition to DRM CRTC gamma LUT. Default value means
-+ * linear transfer function, which is the default CRTC gamma LUT behaviour
-+ * without this property.
++ * This function lets the driver enable the 3D LUT color correction property
++ * on a CRTC. This includes shaper LUT, 3D LUT and regamma TF. The shaper
++ * LUT and 3D LUT property is only attached if its size is not 0.
 + */
 +static void
 +dm_crtc_additional_color_mgmt(struct drm_crtc *crtc)
@@ -1366,33 +1362,33 @@ index 97b7a0b8a1c2..a05c210754d4 100644
 +
  /* Implemented only the options currently available for the driver */
  static const struct drm_crtc_funcs amdgpu_dm_crtc_funcs = {
- 	.reset = dm_crtc_reset_state,
-@@ -314,6 +379,10 @@ static const struct drm_crtc_funcs amdgpu_dm_crtc_funcs = {
+ 	.reset = amdgpu_dm_crtc_reset_state,
+@@ -314,6 +378,10 @@ static const struct drm_crtc_funcs amdgpu_dm_crtc_funcs = {
  #if defined(CONFIG_DEBUG_FS)
  	.late_register = amdgpu_dm_crtc_late_register,
  #endif
-+#ifdef AMD_PRIVATE_COLOR
++#ifdef CONFIG_DRM_AMD_COLOR_STEAMDECK
 +	.atomic_set_property = amdgpu_dm_atomic_crtc_set_property,
 +	.atomic_get_property = amdgpu_dm_atomic_crtc_get_property,
 +#endif
  };
  
- static void dm_crtc_helper_disable(struct drm_crtc *crtc)
-@@ -489,6 +558,9 @@ int amdgpu_dm_crtc_init(struct amdgpu_display_manager *dm,
+ static void amdgpu_dm_crtc_helper_disable(struct drm_crtc *crtc)
+@@ -489,6 +557,9 @@ int amdgpu_dm_crtc_init(struct amdgpu_display_manager *dm,
  
  	drm_mode_crtc_set_gamma_size(&acrtc->base, MAX_COLOR_LEGACY_LUT_ENTRIES);
  
-+#ifdef AMD_PRIVATE_COLOR
++#ifdef CONFIG_DRM_AMD_COLOR_STEAMDECK
 +	dm_crtc_additional_color_mgmt(&acrtc->base);
 +#endif
  	return 0;
  
  fail:
 diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_plane.c b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_plane.c
-index cc74dd69acf2..17719e15cbe5 100644
+index 116121e647ca..35d78447452f 100644
 --- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_plane.c
 +++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_plane.c
-@@ -1333,8 +1333,14 @@ static void dm_drm_plane_reset(struct drm_plane *plane)
+@@ -1337,8 +1337,14 @@ static void amdgpu_dm_plane_drm_plane_reset(struct drm_plane *plane)
  	amdgpu_state = kzalloc(sizeof(*amdgpu_state), GFP_KERNEL);
  	WARN_ON(amdgpu_state == NULL);
  
@@ -1408,21 +1404,31 @@ index cc74dd69acf2..17719e15cbe5 100644
 +	amdgpu_state->blend_tf = AMDGPU_TRANSFER_FUNCTION_DEFAULT;
  }
  
- static struct drm_plane_state *
-@@ -1354,6 +1360,22 @@ dm_drm_plane_duplicate_state(struct drm_plane *plane)
+ static struct drm_plane_state *amdgpu_dm_plane_drm_plane_duplicate_state(struct drm_plane *plane)
+@@ -1357,6 +1363,32 @@ static struct drm_plane_state *amdgpu_dm_plane_drm_plane_duplicate_state(struct
  		dc_plane_state_retain(dm_plane_state->dc_state);
  	}
  
-+	if (dm_plane_state->degamma_lut)
-+		drm_property_blob_get(dm_plane_state->degamma_lut);
-+	if (dm_plane_state->ctm)
-+		drm_property_blob_get(dm_plane_state->ctm);
-+	if (dm_plane_state->shaper_lut)
-+		drm_property_blob_get(dm_plane_state->shaper_lut);
-+	if (dm_plane_state->lut3d)
-+		drm_property_blob_get(dm_plane_state->lut3d);
-+	if (dm_plane_state->blend_lut)
-+		drm_property_blob_get(dm_plane_state->blend_lut);
++	if (old_dm_plane_state->degamma_lut) {
++		drm_property_blob_get(old_dm_plane_state->degamma_lut);
++		dm_plane_state->degamma_lut = old_dm_plane_state->degamma_lut;
++	}
++	if (old_dm_plane_state->ctm) {
++		drm_property_blob_get(old_dm_plane_state->ctm);
++		dm_plane_state->ctm = old_dm_plane_state->ctm;
++	}
++	if (old_dm_plane_state->shaper_lut) {
++		drm_property_blob_get(old_dm_plane_state->shaper_lut);
++		dm_plane_state->shaper_lut = old_dm_plane_state->shaper_lut;
++	}
++	if (old_dm_plane_state->lut3d) {
++		drm_property_blob_get(old_dm_plane_state->lut3d);
++		dm_plane_state->lut3d = old_dm_plane_state->lut3d;
++	}
++	if (old_dm_plane_state->blend_lut) {
++		drm_property_blob_get(old_dm_plane_state->blend_lut);
++		dm_plane_state->blend_lut = old_dm_plane_state->blend_lut;
++	}
 +
 +	dm_plane_state->degamma_tf = old_dm_plane_state->degamma_tf;
 +	dm_plane_state->hdr_mult = old_dm_plane_state->hdr_mult;
@@ -1432,7 +1438,7 @@ index cc74dd69acf2..17719e15cbe5 100644
  	return &dm_plane_state->base;
  }
  
-@@ -1421,12 +1443,203 @@ static void dm_drm_plane_destroy_state(struct drm_plane *plane,
+@@ -1424,12 +1456,197 @@ static void amdgpu_dm_plane_drm_plane_destroy_state(struct drm_plane *plane,
  {
  	struct dm_plane_state *dm_plane_state = to_dm_plane_state(state);
  
@@ -1453,20 +1459,16 @@ index cc74dd69acf2..17719e15cbe5 100644
  	drm_atomic_helper_plane_destroy_state(plane, state);
  }
  
-+#ifdef AMD_PRIVATE_COLOR
++#ifdef CONFIG_DRM_AMD_COLOR_STEAMDECK
 +static void
 +dm_atomic_plane_attach_color_mgmt_properties(struct amdgpu_display_manager *dm,
 +					     struct drm_plane *plane)
 +{
-+	struct amdgpu_mode_info mode_info = dm->adev->mode_info;
-+	struct dpp_color_caps dpp_color_caps = dm->dc->caps.color.dpp;
-+
-+	/* Check HW color pipeline capabilities for DPP (pre-blending) before expose*/
-+	if (dpp_color_caps.dgam_ram || dpp_color_caps.gamma_corr) {
++	if (dm->dc->caps.color.dpp.dgam_ram || dm->dc->caps.color.dpp.gamma_corr ) {
 +		drm_object_attach_property(&plane->base,
-+					   mode_info.plane_degamma_lut_property, 0);
++					   dm->adev->mode_info.plane_degamma_lut_property, 0);
 +		drm_object_attach_property(&plane->base,
-+					   mode_info.plane_degamma_lut_size_property,
++					   dm->adev->mode_info.plane_degamma_lut_size_property,
 +					   MAX_COLOR_LUT_ENTRIES);
 +		drm_object_attach_property(&plane->base,
 +					   dm->adev->mode_info.plane_degamma_tf_property,
@@ -1477,35 +1479,33 @@ index cc74dd69acf2..17719e15cbe5 100644
 +				   dm->adev->mode_info.plane_hdr_mult_property,
 +				   AMDGPU_HDR_MULT_DEFAULT);
 +
-+	/* Only enable plane CTM if both DPP and MPC gamut remap is available. */
-+	if (dm->dc->caps.color.mpc.gamut_remap)
-+		drm_object_attach_property(&plane->base,
-+					   dm->adev->mode_info.plane_ctm_property, 0);
++	drm_object_attach_property(&plane->base,
++			           dm->adev->mode_info.plane_ctm_property, 0);
 +
-+	if (dpp_color_caps.hw_3d_lut) {
++	if (dm->dc->caps.color.dpp.hw_3d_lut) {
 +		drm_object_attach_property(&plane->base,
-+					   mode_info.plane_shaper_lut_property, 0);
++					   dm->adev->mode_info.plane_shaper_lut_property, 0);
 +		drm_object_attach_property(&plane->base,
-+					   mode_info.plane_shaper_lut_size_property,
++					   dm->adev->mode_info.plane_shaper_lut_size_property,
 +					   MAX_COLOR_LUT_ENTRIES);
 +		drm_object_attach_property(&plane->base,
-+					   mode_info.plane_shaper_tf_property,
++					   dm->adev->mode_info.plane_shaper_tf_property,
 +					   AMDGPU_TRANSFER_FUNCTION_DEFAULT);
 +		drm_object_attach_property(&plane->base,
-+					   mode_info.plane_lut3d_property, 0);
++					   dm->adev->mode_info.plane_lut3d_property, 0);
 +		drm_object_attach_property(&plane->base,
-+					   mode_info.plane_lut3d_size_property,
++					   dm->adev->mode_info.plane_lut3d_size_property,
 +					   MAX_COLOR_3DLUT_ENTRIES);
 +	}
 +
-+	if (dpp_color_caps.ogam_ram) {
++	if (dm->dc->caps.color.dpp.ogam_ram) {
 +		drm_object_attach_property(&plane->base,
-+					   mode_info.plane_blend_lut_property, 0);
++					   dm->adev->mode_info.plane_blend_lut_property, 0);
 +		drm_object_attach_property(&plane->base,
-+					   mode_info.plane_blend_lut_size_property,
++					   dm->adev->mode_info.plane_blend_lut_size_property,
 +					   MAX_COLOR_LUT_ENTRIES);
 +		drm_object_attach_property(&plane->base,
-+					   mode_info.plane_blend_tf_property,
++					   dm->adev->mode_info.plane_blend_tf_property,
 +					   AMDGPU_TRANSFER_FUNCTION_DEFAULT);
 +	}
 +}
@@ -1636,22 +1636,22 @@ index cc74dd69acf2..17719e15cbe5 100644
  static const struct drm_plane_funcs dm_plane_funcs = {
  	.update_plane	= drm_atomic_helper_update_plane,
  	.disable_plane	= drm_atomic_helper_disable_plane,
-@@ -1435,6 +1648,10 @@ static const struct drm_plane_funcs dm_plane_funcs = {
- 	.atomic_duplicate_state = dm_drm_plane_duplicate_state,
- 	.atomic_destroy_state = dm_drm_plane_destroy_state,
- 	.format_mod_supported = dm_plane_format_mod_supported,
-+#ifdef AMD_PRIVATE_COLOR
+@@ -1438,6 +1655,10 @@ static const struct drm_plane_funcs dm_plane_funcs = {
+ 	.atomic_duplicate_state = amdgpu_dm_plane_drm_plane_duplicate_state,
+ 	.atomic_destroy_state = amdgpu_dm_plane_drm_plane_destroy_state,
+ 	.format_mod_supported = amdgpu_dm_plane_format_mod_supported,
++#ifdef CONFIG_DRM_AMD_COLOR_STEAMDECK
 +	.atomic_set_property = dm_atomic_plane_set_property,
 +	.atomic_get_property = dm_atomic_plane_get_property,
 +#endif
  };
  
  int amdgpu_dm_plane_init(struct amdgpu_display_manager *dm,
-@@ -1514,6 +1731,9 @@ int amdgpu_dm_plane_init(struct amdgpu_display_manager *dm,
+@@ -1517,6 +1738,9 @@ int amdgpu_dm_plane_init(struct amdgpu_display_manager *dm,
  
  	drm_plane_helper_add(plane, &dm_plane_helper_funcs);
  
-+#ifdef AMD_PRIVATE_COLOR
++#ifdef CONFIG_DRM_AMD_COLOR_STEAMDECK
 +	dm_atomic_plane_attach_color_mgmt_properties(dm, plane);
 +#endif
  	/* Create (reset) the plane state */
@@ -1775,81 +1775,44 @@ index 3538973bd0c6..04b2e04b68f3 100644
  			j++;
  		}
  	}
-diff --git a/drivers/gpu/drm/amd/display/dc/dcn30/dcn30_hwseq.c b/drivers/gpu/drm/amd/display/dc/dcn30/dcn30_hwseq.c
-index 255713ec29bb..fce9b33c0f88 100644
---- a/drivers/gpu/drm/amd/display/dc/dcn30/dcn30_hwseq.c
-+++ b/drivers/gpu/drm/amd/display/dc/dcn30/dcn30_hwseq.c
-@@ -186,6 +186,43 @@ bool dcn30_set_input_transfer_func(struct dc *dc,
- 	return result;
- }
+diff --git a/drivers/gpu/drm/amd/display/dc/hwss/dcn10/dcn10_hwseq.c b/drivers/gpu/drm/amd/display/dc/hwss/dcn10/dcn10_hwseq.c
+index cdb903116eb7..eb45c178fe59 100644
+--- a/drivers/gpu/drm/amd/display/dc/hwss/dcn10/dcn10_hwseq.c
++++ b/drivers/gpu/drm/amd/display/dc/hwss/dcn10/dcn10_hwseq.c
+@@ -2498,17 +2498,17 @@ void dcn10_program_gamut_remap(struct pipe_ctx *pipe_ctx)
+ 	adjust.gamut_adjust_type = GRAPHICS_GAMUT_ADJUST_TYPE_BYPASS;
  
-+void dcn30_program_gamut_remap(struct pipe_ctx *pipe_ctx)
-+{
-+	int i = 0;
-+	struct dpp_grph_csc_adjustment dpp_adjust;
-+	struct mpc_grph_gamut_adjustment mpc_adjust;
-+	int mpcc_id = pipe_ctx->plane_res.hubp->inst;
-+	struct mpc *mpc = pipe_ctx->stream_res.opp->ctx->dc->res_pool->mpc;
-+
-+	memset(&dpp_adjust, 0, sizeof(dpp_adjust));
-+	dpp_adjust.gamut_adjust_type = GRAPHICS_GAMUT_ADJUST_TYPE_BYPASS;
-+
+ 
+-	if (pipe_ctx->stream->gamut_remap_matrix.enable_remap == true) {
 +	if (pipe_ctx->plane_state &&
 +	    pipe_ctx->plane_state->gamut_remap_matrix.enable_remap == true) {
-+		dpp_adjust.gamut_adjust_type = GRAPHICS_GAMUT_ADJUST_TYPE_SW;
-+		for (i = 0; i < CSC_TEMPERATURE_MATRIX_SIZE; i++)
-+			dpp_adjust.temperature_matrix[i] =
+ 		adjust.gamut_adjust_type = GRAPHICS_GAMUT_ADJUST_TYPE_SW;
+ 		for (i = 0; i < CSC_TEMPERATURE_MATRIX_SIZE; i++)
+ 			adjust.temperature_matrix[i] =
+-				pipe_ctx->stream->gamut_remap_matrix.matrix[i];
+-	} else if (pipe_ctx->plane_state &&
+-		   pipe_ctx->plane_state->gamut_remap_matrix.enable_remap == true) {
 +				pipe_ctx->plane_state->gamut_remap_matrix.matrix[i];
-+	}
-+
-+	pipe_ctx->plane_res.dpp->funcs->dpp_set_gamut_remap(pipe_ctx->plane_res.dpp,
-+							    &dpp_adjust);
-+
-+	memset(&mpc_adjust, 0, sizeof(mpc_adjust));
-+	mpc_adjust.gamut_adjust_type = GRAPHICS_GAMUT_ADJUST_TYPE_BYPASS;
-+
-+	if (pipe_ctx->top_pipe == NULL) {
-+		if (pipe_ctx->stream->gamut_remap_matrix.enable_remap == true) {
-+			mpc_adjust.gamut_adjust_type = GRAPHICS_GAMUT_ADJUST_TYPE_SW;
-+			for (i = 0; i < CSC_TEMPERATURE_MATRIX_SIZE; i++)
-+				mpc_adjust.temperature_matrix[i] =
-+					pipe_ctx->stream->gamut_remap_matrix.matrix[i];
-+		}
-+	}
-+
-+	mpc->funcs->set_gamut_remap(mpc, mpcc_id, &mpc_adjust);
-+}
-+
- bool dcn30_set_output_transfer_func(struct dc *dc,
- 				struct pipe_ctx *pipe_ctx,
- 				const struct dc_stream_state *stream)
-diff --git a/drivers/gpu/drm/amd/display/dc/dcn30/dcn30_hwseq.h b/drivers/gpu/drm/amd/display/dc/dcn30/dcn30_hwseq.h
-index ce19c54097f8..e557e2b98618 100644
---- a/drivers/gpu/drm/amd/display/dc/dcn30/dcn30_hwseq.h
-+++ b/drivers/gpu/drm/amd/display/dc/dcn30/dcn30_hwseq.h
-@@ -58,6 +58,9 @@ bool dcn30_set_blend_lut(struct pipe_ctx *pipe_ctx,
- bool dcn30_set_input_transfer_func(struct dc *dc,
- 				struct pipe_ctx *pipe_ctx,
- 				const struct dc_plane_state *plane_state);
-+
-+void dcn30_program_gamut_remap(struct pipe_ctx *pipe_ctx);
-+
- bool dcn30_set_output_transfer_func(struct dc *dc,
- 				struct pipe_ctx *pipe_ctx,
- 				const struct dc_stream_state *stream);
-diff --git a/drivers/gpu/drm/amd/display/dc/dcn301/dcn301_init.c b/drivers/gpu/drm/amd/display/dc/dcn301/dcn301_init.c
-index 61205cdbe2d5..fdbe3d42cd7b 100644
---- a/drivers/gpu/drm/amd/display/dc/dcn301/dcn301_init.c
-+++ b/drivers/gpu/drm/amd/display/dc/dcn301/dcn301_init.c
-@@ -33,7 +33,7 @@
- #include "dcn301_init.h"
++	} else if (pipe_ctx->stream->gamut_remap_matrix.enable_remap == true) {
+ 		adjust.gamut_adjust_type = GRAPHICS_GAMUT_ADJUST_TYPE_SW;
+ 		for (i = 0; i < CSC_TEMPERATURE_MATRIX_SIZE; i++)
+ 			adjust.temperature_matrix[i] =
+-				pipe_ctx->plane_state->gamut_remap_matrix.matrix[i];
++				pipe_ctx->stream->gamut_remap_matrix.matrix[i];
+ 	}
  
- static const struct hw_sequencer_funcs dcn301_funcs = {
--	.program_gamut_remap = dcn10_program_gamut_remap,
-+	.program_gamut_remap = dcn30_program_gamut_remap,
- 	.init_hw = dcn10_init_hw,
- 	.power_down_on_boot = dcn10_power_down_on_boot,
- 	.apply_ctx_to_hw = dce110_apply_ctx_to_hw,
+ 	pipe_ctx->plane_res.dpp->funcs->dpp_set_gamut_remap(pipe_ctx->plane_res.dpp, &adjust);
+@@ -2954,8 +2954,8 @@ void dcn10_program_pipe(
+ 	hws->funcs.set_hdr_multiplier(pipe_ctx);
+ 
+ 	if (pipe_ctx->plane_state->update_flags.bits.full_update ||
+-			pipe_ctx->plane_state->update_flags.bits.in_transfer_func_change ||
+-			pipe_ctx->plane_state->update_flags.bits.gamma_change)
++	    pipe_ctx->plane_state->update_flags.bits.in_transfer_func_change ||
++	    pipe_ctx->plane_state->update_flags.bits.gamma_change)
+ 		hws->funcs.set_input_transfer_func(dc, pipe_ctx, pipe_ctx->plane_state);
+ 
+ 	/* dcn10_translate_regamma_to_hw_format takes 750us to finish
 diff --git a/drivers/gpu/drm/amd/display/include/fixed31_32.h b/drivers/gpu/drm/amd/display/include/fixed31_32.h
 index d4cf7ead1d87..84da1dd34efd 100644
 --- a/drivers/gpu/drm/amd/display/include/fixed31_32.h
@@ -1887,7 +1850,7 @@ index dc01c43f6193..d72c22dcf685 100644
  	ctm = (struct drm_color_ctm *)state->ctm->data;
  	for (i = 0; i < ARRAY_SIZE(ctm->matrix); ++i) {
 diff --git a/drivers/gpu/drm/drm_atomic.c b/drivers/gpu/drm/drm_atomic.c
-index c277b198fa3f..c3df45f90145 100644
+index f1a503aafe5a..e2bbdcb64389 100644
 --- a/drivers/gpu/drm/drm_atomic.c
 +++ b/drivers/gpu/drm/drm_atomic.c
 @@ -733,6 +733,7 @@ static void drm_atomic_plane_print_state(struct drm_printer *p,
@@ -1910,6 +1873,104 @@ index 784e63d70a42..25bb0859fda7 100644
  }
  EXPORT_SYMBOL(__drm_atomic_helper_plane_duplicate_state);
  
+diff --git a/drivers/gpu/drm/drm_atomic_uapi.c b/drivers/gpu/drm/drm_atomic_uapi.c
+index 98d3b10c08ae..37caa6c33e22 100644
+--- a/drivers/gpu/drm/drm_atomic_uapi.c
++++ b/drivers/gpu/drm/drm_atomic_uapi.c
+@@ -362,48 +362,6 @@ static s32 __user *get_out_fence_for_connector(struct drm_atomic_state *state,
+ 	return fence_ptr;
+ }
+ 
+-static int
+-drm_atomic_replace_property_blob_from_id(struct drm_device *dev,
+-					 struct drm_property_blob **blob,
+-					 uint64_t blob_id,
+-					 ssize_t expected_size,
+-					 ssize_t expected_elem_size,
+-					 bool *replaced)
+-{
+-	struct drm_property_blob *new_blob = NULL;
+-
+-	if (blob_id != 0) {
+-		new_blob = drm_property_lookup_blob(dev, blob_id);
+-		if (new_blob == NULL) {
+-			drm_dbg_atomic(dev,
+-				       "cannot find blob ID %llu\n", blob_id);
+-			return -EINVAL;
+-		}
+-
+-		if (expected_size > 0 &&
+-		    new_blob->length != expected_size) {
+-			drm_dbg_atomic(dev,
+-				       "[BLOB:%d] length %zu different from expected %zu\n",
+-				       new_blob->base.id, new_blob->length, expected_size);
+-			drm_property_blob_put(new_blob);
+-			return -EINVAL;
+-		}
+-		if (expected_elem_size > 0 &&
+-		    new_blob->length % expected_elem_size != 0) {
+-			drm_dbg_atomic(dev,
+-				       "[BLOB:%d] length %zu not divisible by element size %zu\n",
+-				       new_blob->base.id, new_blob->length, expected_elem_size);
+-			drm_property_blob_put(new_blob);
+-			return -EINVAL;
+-		}
+-	}
+-
+-	*replaced |= drm_property_replace_blob(blob, new_blob);
+-	drm_property_blob_put(new_blob);
+-
+-	return 0;
+-}
+-
+ static int drm_atomic_crtc_set_property(struct drm_crtc *crtc,
+ 		struct drm_crtc_state *state, struct drm_property *property,
+ 		uint64_t val)
+@@ -424,7 +382,7 @@ static int drm_atomic_crtc_set_property(struct drm_crtc *crtc,
+ 	} else if (property == config->prop_vrr_enabled) {
+ 		state->vrr_enabled = val;
+ 	} else if (property == config->degamma_lut_property) {
+-		ret = drm_atomic_replace_property_blob_from_id(dev,
++		ret = drm_property_replace_blob_from_id(dev,
+ 					&state->degamma_lut,
+ 					val,
+ 					-1, sizeof(struct drm_color_lut),
+@@ -432,7 +390,7 @@ static int drm_atomic_crtc_set_property(struct drm_crtc *crtc,
+ 		state->color_mgmt_changed |= replaced;
+ 		return ret;
+ 	} else if (property == config->ctm_property) {
+-		ret = drm_atomic_replace_property_blob_from_id(dev,
++		ret = drm_property_replace_blob_from_id(dev,
+ 					&state->ctm,
+ 					val,
+ 					sizeof(struct drm_color_ctm), -1,
+@@ -440,7 +398,7 @@ static int drm_atomic_crtc_set_property(struct drm_crtc *crtc,
+ 		state->color_mgmt_changed |= replaced;
+ 		return ret;
+ 	} else if (property == config->gamma_lut_property) {
+-		ret = drm_atomic_replace_property_blob_from_id(dev,
++		ret = drm_property_replace_blob_from_id(dev,
+ 					&state->gamma_lut,
+ 					val,
+ 					-1, sizeof(struct drm_color_lut),
+@@ -581,7 +539,7 @@ static int drm_atomic_plane_set_property(struct drm_plane *plane,
+ 	} else if (property == plane->color_range_property) {
+ 		state->color_range = val;
+ 	} else if (property == config->prop_fb_damage_clips) {
+-		ret = drm_atomic_replace_property_blob_from_id(dev,
++		ret = drm_property_replace_blob_from_id(dev,
+ 					&state->fb_damage_clips,
+ 					val,
+ 					-1,
+@@ -758,7 +716,7 @@ static int drm_atomic_connector_set_property(struct drm_connector *connector,
+ 		if (state->link_status != DRM_LINK_STATUS_GOOD)
+ 			state->link_status = val;
+ 	} else if (property == config->hdr_output_metadata_property) {
+-		ret = drm_atomic_replace_property_blob_from_id(dev,
++		ret = drm_property_replace_blob_from_id(dev,
+ 				&state->hdr_output_metadata,
+ 				val,
+ 				sizeof(struct hdr_output_metadata), -1,
 diff --git a/drivers/gpu/drm/drm_property.c b/drivers/gpu/drm/drm_property.c
 index dfec479830e4..f72ef6493340 100644
 --- a/drivers/gpu/drm/drm_property.c
@@ -2019,7 +2080,7 @@ index 65bc9710a470..082f29156b3e 100644
  				     struct drm_property_blob **replace,
  				     size_t length,
 diff --git a/include/uapi/drm/drm_mode.h b/include/uapi/drm/drm_mode.h
-index ea1b639bcb28..cea5653e4020 100644
+index 128d09138ceb..75d2757517d8 100644
 --- a/include/uapi/drm/drm_mode.h
 +++ b/include/uapi/drm/drm_mode.h
 @@ -846,6 +846,14 @@ struct drm_color_ctm {
@@ -2040,10 +2101,10 @@ index ea1b639bcb28..cea5653e4020 100644
 -- 
 2.43.0
 
-From 31b1881128f11d4744fdbc01b851af48ad15e11e Mon Sep 17 00:00:00 2001
+From fdd1f7da06477e7e7adbac968d5bb6921b51b83a Mon Sep 17 00:00:00 2001
 From: Peter Jung <admin@ptr1337.dev>
-Date: Fri, 8 Dec 2023 10:30:43 +0100
-Subject: [PATCH 2/7] amd-pref-core
+Date: Fri, 22 Dec 2023 17:52:54 +0100
+Subject: [PATCH 2/8] amd-pref-core
 
 Signed-off-by: Peter Jung <admin@ptr1337.dev>
 ---
@@ -2060,7 +2121,7 @@ Signed-off-by: Peter Jung <admin@ptr1337.dev>
  10 files changed, 284 insertions(+), 12 deletions(-)
 
 diff --git a/Documentation/admin-guide/kernel-parameters.txt b/Documentation/admin-guide/kernel-parameters.txt
-index 41644336e358..6e121fdb68f9 100644
+index 65731b060e3f..cbfa63a87e4a 100644
 --- a/Documentation/admin-guide/kernel-parameters.txt
 +++ b/Documentation/admin-guide/kernel-parameters.txt
 @@ -363,6 +363,11 @@
@@ -2160,7 +2221,7 @@ index 1cf40f69278c..0b832ff529db 100644
  ===============================================
  
 diff --git a/arch/x86/Kconfig b/arch/x86/Kconfig
-index 66bfabae8814..a2e163acf623 100644
+index 3762f41bb092..3e57773f946a 100644
 --- a/arch/x86/Kconfig
 +++ b/arch/x86/Kconfig
 @@ -1054,8 +1054,9 @@ config SCHED_MC
@@ -2536,10 +2597,10 @@ index 1f6186475715..25f0fb53d320 100644
  MODULE_AUTHOR("Huang Rui <ray.huang@amd.com>");
  MODULE_DESCRIPTION("AMD Processor P-state Frequency Driver");
 diff --git a/drivers/cpufreq/cpufreq.c b/drivers/cpufreq/cpufreq.c
-index 60ed89000e82..4ada787ff105 100644
+index 934d35f570b7..14a4cbc6dd05 100644
 --- a/drivers/cpufreq/cpufreq.c
 +++ b/drivers/cpufreq/cpufreq.c
-@@ -2718,6 +2718,19 @@ void cpufreq_update_limits(unsigned int cpu)
+@@ -2717,6 +2717,19 @@ void cpufreq_update_limits(unsigned int cpu)
  }
  EXPORT_SYMBOL_GPL(cpufreq_update_limits);
  
@@ -2630,7 +2691,7 @@ index 6ad02ad9c7b4..d21838835abd 100644
  	/* EPP feature related attributes*/
  	s16	epp_policy;
 diff --git a/include/linux/cpufreq.h b/include/linux/cpufreq.h
-index 71d186d6933a..1cc1241fb698 100644
+index 1c5ca92a0555..f62257b2a42f 100644
 --- a/include/linux/cpufreq.h
 +++ b/include/linux/cpufreq.h
 @@ -235,6 +235,7 @@ int cpufreq_get_policy(struct cpufreq_policy *policy, unsigned int cpu);
@@ -2662,10 +2723,10 @@ index 71d186d6933a..1cc1241fb698 100644
 -- 
 2.43.0
 
-From adbf1a086a915b3bbeb9064f632546d1c809e2fd Mon Sep 17 00:00:00 2001
+From 3b31318d52e1dac9f4da4ef7d7d5ff835b28a899 Mon Sep 17 00:00:00 2001
 From: Peter Jung <admin@ptr1337.dev>
-Date: Wed, 29 Nov 2023 19:55:38 +0100
-Subject: [PATCH 3/7] bbr3
+Date: Fri, 22 Dec 2023 17:53:09 +0100
+Subject: [PATCH 3/8] bbr3
 
 Signed-off-by: Peter Jung <admin@ptr1337.dev>
 ---
@@ -2677,35 +2738,35 @@ Signed-off-by: Peter Jung <admin@ptr1337.dev>
  include/uapi/linux/tcp.h           |    1 +
  net/ipv4/Kconfig                   |   21 +-
  net/ipv4/tcp.c                     |    3 +
- net/ipv4/tcp_bbr.c                 | 2231 +++++++++++++++++++++-------
+ net/ipv4/tcp_bbr.c                 | 2230 +++++++++++++++++++++-------
  net/ipv4/tcp_cong.c                |    1 +
  net/ipv4/tcp_input.c               |   40 +-
  net/ipv4/tcp_minisocks.c           |    2 +
  net/ipv4/tcp_output.c              |   48 +-
  net/ipv4/tcp_rate.c                |   30 +-
  net/ipv4/tcp_timer.c               |    1 +
- 15 files changed, 1934 insertions(+), 551 deletions(-)
+ 15 files changed, 1933 insertions(+), 551 deletions(-)
 
 diff --git a/include/linux/tcp.h b/include/linux/tcp.h
-index 3c5efeeb024f..a0d4afd221d8 100644
+index b646b574b060..f908af6e4e06 100644
 --- a/include/linux/tcp.h
 +++ b/include/linux/tcp.h
-@@ -257,7 +257,9 @@ struct tcp_sock {
- 	u8	compressed_ack;
+@@ -273,7 +273,9 @@ struct tcp_sock {
  	u8	dup_ack_counter:2,
  		tlp_retrans:1,	/* TLP is a retransmission */
--		unused:5;
+ 		tcp_usec_ts:1, /* TSval values in usec */
+-		unused:4;
 +		fast_ack_mode:2, /* which fast ack mode ? */
 +		tlp_orig_data_app_limited:1, /* app-limited before TLP rtx? */
-+		unused:2;
++		unused:1;
  	u32	chrono_start;	/* Start time in jiffies of a TCP chrono */
  	u32	chrono_stat[3];	/* Time in jiffies for chrono_stat stats */
  	u8	chrono_type:2,	/* current chronograph type */
 diff --git a/include/net/inet_connection_sock.h b/include/net/inet_connection_sock.h
-index 5d2fcc137b88..3f7d429f73e5 100644
+index d0a2f827d5f2..b22d0c54c1c0 100644
 --- a/include/net/inet_connection_sock.h
 +++ b/include/net/inet_connection_sock.h
-@@ -135,8 +135,8 @@ struct inet_connection_sock {
+@@ -137,8 +137,8 @@ struct inet_connection_sock {
  	u32			  icsk_probes_tstamp;
  	u32			  icsk_user_timeout;
  
@@ -2717,10 +2778,10 @@ index 5d2fcc137b88..3f7d429f73e5 100644
  
  #define ICSK_TIME_RETRANS	1	/* Retransmit timer */
 diff --git a/include/net/tcp.h b/include/net/tcp.h
-index a88bf8f6db23..65da8cc4bd62 100644
+index 144ba48bb07b..d5fd1efbadf2 100644
 --- a/include/net/tcp.h
 +++ b/include/net/tcp.h
-@@ -372,6 +372,8 @@ static inline void tcp_dec_quickack_mode(struct sock *sk)
+@@ -381,6 +381,8 @@ static inline void tcp_dec_quickack_mode(struct sock *sk)
  #define	TCP_ECN_QUEUE_CWR	2
  #define	TCP_ECN_DEMAND_CWR	4
  #define	TCP_ECN_SEEN		8
@@ -2729,9 +2790,9 @@ index a88bf8f6db23..65da8cc4bd62 100644
  
  enum tcp_tw_status {
  	TCP_TW_SUCCESS = 0,
-@@ -723,6 +725,15 @@ static inline void tcp_fast_path_check(struct sock *sk)
- 		tcp_fast_path_on(tp);
- }
+@@ -733,6 +735,15 @@ static inline void tcp_fast_path_check(struct sock *sk)
+ 
+ u32 tcp_delack_max(const struct sock *sk);
  
 +static inline void tcp_set_ecn_low_from_dst(struct sock *sk,
 +					    const struct dst_entry *dst)
@@ -2743,9 +2804,9 @@ index a88bf8f6db23..65da8cc4bd62 100644
 +}
 +
  /* Compute the actual rto_min value */
- static inline u32 tcp_rto_min(struct sock *sk)
+ static inline u32 tcp_rto_min(const struct sock *sk)
  {
-@@ -819,6 +830,11 @@ static inline u32 tcp_stamp_us_delta(u64 t1, u64 t0)
+@@ -838,6 +849,11 @@ static inline u32 tcp_stamp_us_delta(u64 t1, u64 t0)
  	return max_t(s64, t1 - t0, 0);
  }
  
@@ -2754,10 +2815,10 @@ index a88bf8f6db23..65da8cc4bd62 100644
 +	return max_t(s32, t1 - t0, 0);
 +}
 +
- static inline u32 tcp_skb_timestamp(const struct sk_buff *skb)
+ /* provide the departure time in us unit */
+ static inline u64 tcp_skb_timestamp_us(const struct sk_buff *skb)
  {
- 	return tcp_ns_to_ts(skb->skb_mstamp_ns);
-@@ -894,9 +910,14 @@ struct tcp_skb_cb {
+@@ -926,9 +942,14 @@ struct tcp_skb_cb {
  			/* pkts S/ACKed so far upon tx of skb, incl retrans: */
  			__u32 delivered;
  			/* start of send pipeline phase */
@@ -2774,7 +2835,7 @@ index a88bf8f6db23..65da8cc4bd62 100644
  		} tx;   /* only used for outgoing skbs */
  		union {
  			struct inet_skb_parm	h4;
-@@ -1000,6 +1021,7 @@ enum tcp_ca_event {
+@@ -1032,6 +1053,7 @@ enum tcp_ca_event {
  	CA_EVENT_LOSS,		/* loss timeout */
  	CA_EVENT_ECN_NO_CE,	/* ECT set, but not CE marked */
  	CA_EVENT_ECN_IS_CE,	/* received CE marked IP packet */
@@ -2782,7 +2843,7 @@ index a88bf8f6db23..65da8cc4bd62 100644
  };
  
  /* Information about inbound ACK, passed to cong_ops->in_ack_event() */
-@@ -1022,7 +1044,11 @@ enum tcp_ca_ack_event_flags {
+@@ -1054,7 +1076,11 @@ enum tcp_ca_ack_event_flags {
  #define TCP_CONG_NON_RESTRICTED 0x1
  /* Requires ECN/ECT set on all packets */
  #define TCP_CONG_NEEDS_ECN	0x2
@@ -2795,7 +2856,7 @@ index a88bf8f6db23..65da8cc4bd62 100644
  
  union tcp_cc_info;
  
-@@ -1042,10 +1068,13 @@ struct ack_sample {
+@@ -1074,10 +1100,13 @@ struct ack_sample {
   */
  struct rate_sample {
  	u64  prior_mstamp; /* starting timestamp for interval */
@@ -2810,7 +2871,7 @@ index a88bf8f6db23..65da8cc4bd62 100644
  	long interval_us;	/* time for tp->delivered to incr "delivered" */
  	u32 snd_interval_us;	/* snd interval for delivered packets */
  	u32 rcv_interval_us;	/* rcv interval for delivered packets */
-@@ -1056,7 +1085,9 @@ struct rate_sample {
+@@ -1088,7 +1117,9 @@ struct rate_sample {
  	u32  last_end_seq;	/* end_seq of most recently ACKed packet */
  	bool is_app_limited;	/* is sample from packet with bubble in pipe? */
  	bool is_retrans;	/* is sample from retransmission? */
@@ -2820,7 +2881,7 @@ index a88bf8f6db23..65da8cc4bd62 100644
  };
  
  struct tcp_congestion_ops {
-@@ -1080,8 +1111,11 @@ struct tcp_congestion_ops {
+@@ -1112,8 +1143,11 @@ struct tcp_congestion_ops {
  	/* hook for packet ack accounting (optional) */
  	void (*pkts_acked)(struct sock *sk, const struct ack_sample *sample);
  
@@ -2834,7 +2895,7 @@ index a88bf8f6db23..65da8cc4bd62 100644
  
  	/* call when packets are delivered to update cwnd and pacing rate,
  	 * after all the ca_state processing. (optional)
-@@ -1147,6 +1181,14 @@ static inline char *tcp_ca_get_name_by_key(u32 key, char *buffer)
+@@ -1179,6 +1213,14 @@ static inline char *tcp_ca_get_name_by_key(u32 key, char *buffer)
  }
  #endif
  
@@ -2849,7 +2910,7 @@ index a88bf8f6db23..65da8cc4bd62 100644
  static inline bool tcp_ca_needs_ecn(const struct sock *sk)
  {
  	const struct inet_connection_sock *icsk = inet_csk(sk);
-@@ -1166,6 +1208,7 @@ static inline void tcp_ca_event(struct sock *sk, const enum tcp_ca_event event)
+@@ -1198,6 +1240,7 @@ static inline void tcp_ca_event(struct sock *sk, const enum tcp_ca_event event)
  void tcp_set_ca_state(struct sock *sk, const u8 ca_state);
  
  /* From tcp_rate.c */
@@ -2857,7 +2918,7 @@ index a88bf8f6db23..65da8cc4bd62 100644
  void tcp_rate_skb_sent(struct sock *sk, struct sk_buff *skb);
  void tcp_rate_skb_delivered(struct sock *sk, struct sk_buff *skb,
  			    struct rate_sample *rs);
-@@ -1178,6 +1221,21 @@ static inline bool tcp_skb_sent_after(u64 t1, u64 t2, u32 seq1, u32 seq2)
+@@ -1210,6 +1253,21 @@ static inline bool tcp_skb_sent_after(u64 t1, u64 t2, u32 seq1, u32 seq2)
  	return t1 > t2 || (t1 == t2 && after(seq1, seq2));
  }
  
@@ -2879,7 +2940,7 @@ index a88bf8f6db23..65da8cc4bd62 100644
  /* These functions determine how the current flow behaves in respect of SACK
   * handling. SACK is negotiated with the peer, and therefore it can vary
   * between different flows.
-@@ -2208,7 +2266,7 @@ struct tcp_plb_state {
+@@ -2371,7 +2429,7 @@ struct tcp_plb_state {
  	u8	consec_cong_rounds:5, /* consecutive congested rounds */
  		unused:3;
  	u32	pause_until; /* jiffies32 when PLB can resume rerouting */
@@ -2923,36 +2984,39 @@ index 50655de04c9b..82f8bd8f0d16 100644
  
  union tcp_cc_info {
 diff --git a/include/uapi/linux/rtnetlink.h b/include/uapi/linux/rtnetlink.h
-index 51c13cf9c5ae..de8dcba26bec 100644
+index 3b687d20c9ed..a7c30c243b54 100644
 --- a/include/uapi/linux/rtnetlink.h
 +++ b/include/uapi/linux/rtnetlink.h
-@@ -506,9 +506,11 @@ enum {
- #define RTAX_FEATURE_SACK	(1 << 1)
- #define RTAX_FEATURE_TIMESTAMP	(1 << 2)
- #define RTAX_FEATURE_ALLFRAG	(1 << 3)
-+#define RTAX_FEATURE_ECN_LOW	(1 << 4)
+@@ -507,12 +507,14 @@ enum {
+ #define RTAX_FEATURE_TIMESTAMP		(1 << 2) /* unused */
+ #define RTAX_FEATURE_ALLFRAG		(1 << 3) /* unused */
+ #define RTAX_FEATURE_TCP_USEC_TS	(1 << 4)
++#define RTAX_FEATURE_ECN_LOW		(1 << 5)
  
- #define RTAX_FEATURE_MASK	(RTAX_FEATURE_ECN | RTAX_FEATURE_SACK | \
--				 RTAX_FEATURE_TIMESTAMP | RTAX_FEATURE_ALLFRAG)
-+				 RTAX_FEATURE_TIMESTAMP | RTAX_FEATURE_ALLFRAG \
-+				 | RTAX_FEATURE_ECN_LOW)
+ #define RTAX_FEATURE_MASK	(RTAX_FEATURE_ECN |		\
+ 				 RTAX_FEATURE_SACK |		\
+ 				 RTAX_FEATURE_TIMESTAMP |	\
+ 				 RTAX_FEATURE_ALLFRAG |		\
+-				 RTAX_FEATURE_TCP_USEC_TS)
++				 RTAX_FEATURE_TCP_USEC_TS |	\
++				 RTAX_FEATURE_ECN_LOW)
  
  struct rta_session {
  	__u8	proto;
 diff --git a/include/uapi/linux/tcp.h b/include/uapi/linux/tcp.h
-index 879eeb0a084b..77270053a5e3 100644
+index c07e9f90c084..5c88336ced60 100644
 --- a/include/uapi/linux/tcp.h
 +++ b/include/uapi/linux/tcp.h
-@@ -170,6 +170,7 @@ enum tcp_fastopen_client_fail {
- #define TCPI_OPT_ECN		8 /* ECN was negociated at TCP session init */
+@@ -176,6 +176,7 @@ enum tcp_fastopen_client_fail {
  #define TCPI_OPT_ECN_SEEN	16 /* we received at least one packet with ECT */
  #define TCPI_OPT_SYN_DATA	32 /* SYN-ACK acked data in SYN sent or rcvd */
-+#define TCPI_OPT_ECN_LOW	64 /* Low-latency ECN configured at init */
+ #define TCPI_OPT_USEC_TS	64 /* usec timestamps */
++#define TCPI_OPT_ECN_LOW	128 /* Low-latency ECN configured at init */
  
  /*
   * Sender's congestion state indicating normal or abnormal situations
 diff --git a/net/ipv4/Kconfig b/net/ipv4/Kconfig
-index 2dfb12230f08..2e14db3bee70 100644
+index 8e94ed7c56a0..50dc9970cad2 100644
 --- a/net/ipv4/Kconfig
 +++ b/net/ipv4/Kconfig
 @@ -668,15 +668,18 @@ config TCP_CONG_BBR
@@ -2984,7 +3048,7 @@ index 2dfb12230f08..2e14db3bee70 100644
  choice
  	prompt "Default TCP congestion control"
 diff --git a/net/ipv4/tcp.c b/net/ipv4/tcp.c
-index ec46d74c2093..30fb4451ebe5 100644
+index ff6838ca2e58..e7de9ebf6a3e 100644
 --- a/net/ipv4/tcp.c
 +++ b/net/ipv4/tcp.c
 @@ -3079,6 +3079,7 @@ int tcp_disconnect(struct sock *sk, int flags)
@@ -2995,7 +3059,7 @@ index ec46d74c2093..30fb4451ebe5 100644
  
  
  	/* Clean up fastopen related fields */
-@@ -3770,6 +3771,8 @@ void tcp_get_info(struct sock *sk, struct tcp_info *info)
+@@ -3805,6 +3806,8 @@ void tcp_get_info(struct sock *sk, struct tcp_info *info)
  		info->tcpi_options |= TCPI_OPT_ECN;
  	if (tp->ecn_flags & TCP_ECN_SEEN)
  		info->tcpi_options |= TCPI_OPT_ECN_SEEN;
@@ -3003,9 +3067,9 @@ index ec46d74c2093..30fb4451ebe5 100644
 +		info->tcpi_options |= TCPI_OPT_ECN_LOW;
  	if (tp->syn_data_acked)
  		info->tcpi_options |= TCPI_OPT_SYN_DATA;
- 
+ 	if (tp->tcp_usec_ts)
 diff --git a/net/ipv4/tcp_bbr.c b/net/ipv4/tcp_bbr.c
-index 146792cd26fe..f4f477a69917 100644
+index 22358032dd48..c60d51bf7825 100644
 --- a/net/ipv4/tcp_bbr.c
 +++ b/net/ipv4/tcp_bbr.c
 @@ -1,18 +1,19 @@
@@ -3432,7 +3496,7 @@ index 146792cd26fe..f4f477a69917 100644
 -	rate = bbr_rate_bytes_per_sec(sk, rate, gain);
 +	rate = bbr_rate_bytes_per_sec(sk, rate, gain,
 +				      bbr_pacing_margin_percent);
- 	rate = min_t(u64, rate, sk->sk_max_pacing_rate);
+ 	rate = min_t(u64, rate, READ_ONCE(sk->sk_max_pacing_rate));
  	return rate;
  }
  
@@ -3441,18 +3505,17 @@ index 146792cd26fe..f4f477a69917 100644
  static void bbr_init_pacing_rate_from_rtt(struct sock *sk)
  {
  	struct tcp_sock *tp = tcp_sk(sk);
-@@ -278,7 +455,8 @@ static void bbr_init_pacing_rate_from_rtt(struct sock *sk)
- 	}
+@@ -279,7 +456,7 @@ static void bbr_init_pacing_rate_from_rtt(struct sock *sk)
  	bw = (u64)tcp_snd_cwnd(tp) * BW_UNIT;
  	do_div(bw, rtt_us);
--	sk->sk_pacing_rate = bbr_bw_to_pacing_rate(sk, bw, bbr_high_gain);
-+	sk->sk_pacing_rate =
-+	  bbr_bw_to_pacing_rate(sk, bw, bbr_param(sk, startup_pacing_gain));
+ 	WRITE_ONCE(sk->sk_pacing_rate,
+-		   bbr_bw_to_pacing_rate(sk, bw, bbr_high_gain));
++		   bbr_bw_to_pacing_rate(sk, bw, bbr_param(sk, startup_pacing_gain)));
  }
  
  /* Pace using current bw estimate and a gain factor. */
-@@ -294,26 +472,48 @@ static void bbr_set_pacing_rate(struct sock *sk, u32 bw, int gain)
- 		sk->sk_pacing_rate = rate;
+@@ -295,26 +472,48 @@ static void bbr_set_pacing_rate(struct sock *sk, u32 bw, int gain)
+ 		WRITE_ONCE(sk->sk_pacing_rate, rate);
  }
  
 -/* override sysctl_tcp_min_tso_segs */
@@ -3469,7 +3532,7 @@ index 146792cd26fe..f4f477a69917 100644
 +	u64 bytes;
 +
 +	/* Budget a TSO/GSO burst size allowance based on bw (pacing_rate). */
-+	bytes = sk->sk_pacing_rate >> sk->sk_pacing_shift;
++	bytes = READ_ONCE(sk->sk_pacing_rate) >> READ_ONCE(sk->sk_pacing_shift);
 +
 +	/* Budget a TSO/GSO burst size allowance based on min_rtt. For every
 +	 * K = 2^tso_rtt_shift microseconds of min_rtt, halve the burst.
@@ -3490,7 +3553,7 @@ index 146792cd26fe..f4f477a69917 100644
 +/* Custom tcp_tso_autosize() for BBR, used at transmit time to cap skb size. */
 +__bpf_kfunc static u32 bbr_tso_segs(struct sock *sk, unsigned int mss_now)
  {
--	return sk->sk_pacing_rate < (bbr_min_tso_rate >> 3) ? 1 : 2;
+-	return READ_ONCE(sk->sk_pacing_rate) < (bbr_min_tso_rate >> 3) ? 1 : 2;
 +	return bbr_tso_segs_generic(sk, mss_now, sk->sk_gso_max_size);
  }
  
@@ -3504,16 +3567,16 @@ index 146792cd26fe..f4f477a69917 100644
 -	 * driver provided sk_gso_max_size.
 -	 */
 -	bytes = min_t(unsigned long,
--		      sk->sk_pacing_rate >> READ_ONCE(sk->sk_pacing_shift),
+-		      READ_ONCE(sk->sk_pacing_rate) >> READ_ONCE(sk->sk_pacing_shift),
 -		      GSO_LEGACY_MAX_SIZE - 1 - MAX_TCP_HEADER);
 -	segs = max_t(u32, bytes / tp->mss_cache, bbr_min_tso_segs(sk));
  
 -	return min(segs, 0x7FU);
-+	return  bbr_tso_segs_generic(sk, tp->mss_cache, GSO_LEGACY_MAX_SIZE);
++	return bbr_tso_segs_generic(sk, tp->mss_cache, GSO_LEGACY_MAX_SIZE);
  }
  
  /* Save "last known good" cwnd so we can restore it after losses or PROBE_RTT */
-@@ -333,7 +533,9 @@ __bpf_kfunc static void bbr_cwnd_event(struct sock *sk, enum tcp_ca_event event)
+@@ -334,7 +533,9 @@ __bpf_kfunc static void bbr_cwnd_event(struct sock *sk, enum tcp_ca_event event)
  	struct tcp_sock *tp = tcp_sk(sk);
  	struct bbr *bbr = inet_csk_ca(sk);
  
@@ -3524,7 +3587,7 @@ index 146792cd26fe..f4f477a69917 100644
  		bbr->idle_restart = 1;
  		bbr->ack_epoch_mstamp = tp->tcp_mstamp;
  		bbr->ack_epoch_acked = 0;
-@@ -344,6 +546,16 @@ __bpf_kfunc static void bbr_cwnd_event(struct sock *sk, enum tcp_ca_event event)
+@@ -345,6 +546,16 @@ __bpf_kfunc static void bbr_cwnd_event(struct sock *sk, enum tcp_ca_event event)
  			bbr_set_pacing_rate(sk, bbr_bw(sk), BBR_UNIT);
  		else if (bbr->mode == BBR_PROBE_RTT)
  			bbr_check_probe_rtt_done(sk);
@@ -3541,7 +3604,7 @@ index 146792cd26fe..f4f477a69917 100644
  	}
  }
  
-@@ -366,10 +578,10 @@ static u32 bbr_bdp(struct sock *sk, u32 bw, int gain)
+@@ -367,10 +578,10 @@ static u32 bbr_bdp(struct sock *sk, u32 bw, int gain)
  	 * default. This should only happen when the connection is not using TCP
  	 * timestamps and has retransmitted all of the SYN/SYNACK/data packets
  	 * ACKed so far. In this case, an RTO can cut cwnd to 1, in which
@@ -3554,7 +3617,7 @@ index 146792cd26fe..f4f477a69917 100644
  
  	w = (u64)bw * bbr->min_rtt_us;
  
-@@ -386,23 +598,23 @@ static u32 bbr_bdp(struct sock *sk, u32 bw, int gain)
+@@ -387,23 +598,23 @@ static u32 bbr_bdp(struct sock *sk, u32 bw, int gain)
   *   - one skb in sending host Qdisc,
   *   - one skb in sending host TSO/GSO engine
   *   - one skb being received by receiver host LRO/GRO/delayed-ACK engine
@@ -3586,7 +3649,7 @@ index 146792cd26fe..f4f477a69917 100644
  		cwnd += 2;
  
  	return cwnd;
-@@ -457,10 +669,10 @@ static u32 bbr_ack_aggregation_cwnd(struct sock *sk)
+@@ -458,10 +669,10 @@ static u32 bbr_ack_aggregation_cwnd(struct sock *sk)
  {
  	u32 max_aggr_cwnd, aggr_cwnd = 0;
  
@@ -3599,7 +3662,7 @@ index 146792cd26fe..f4f477a69917 100644
  			     >> BBR_SCALE;
  		aggr_cwnd = min(aggr_cwnd, max_aggr_cwnd);
  	}
-@@ -468,66 +680,27 @@ static u32 bbr_ack_aggregation_cwnd(struct sock *sk)
+@@ -469,66 +680,27 @@ static u32 bbr_ack_aggregation_cwnd(struct sock *sk)
  	return aggr_cwnd;
  }
  
@@ -3673,7 +3736,7 @@ index 146792cd26fe..f4f477a69917 100644
  	target_cwnd = bbr_bdp(sk, bw, gain);
  
  	/* Increment the cwnd to account for excess ACKed data that seems
-@@ -536,74 +709,26 @@ static void bbr_set_cwnd(struct sock *sk, const struct rate_sample *rs,
+@@ -537,74 +709,26 @@ static void bbr_set_cwnd(struct sock *sk, const struct rate_sample *rs,
  	target_cwnd += bbr_ack_aggregation_cwnd(sk);
  	target_cwnd = bbr_quantization_budget(sk, target_cwnd);
  
@@ -3765,7 +3828,7 @@ index 146792cd26fe..f4f477a69917 100644
  }
  
  static void bbr_reset_startup_mode(struct sock *sk)
-@@ -613,191 +738,49 @@ static void bbr_reset_startup_mode(struct sock *sk)
+@@ -614,191 +738,49 @@ static void bbr_reset_startup_mode(struct sock *sk)
  	bbr->mode = BBR_STARTUP;
  }
  
@@ -3982,7 +4045,7 @@ index 146792cd26fe..f4f477a69917 100644
  }
  
  /* Estimates the windowed max degree of ack aggregation.
-@@ -811,7 +794,7 @@ static void bbr_update_bw(struct sock *sk, const struct rate_sample *rs)
+@@ -812,7 +794,7 @@ static void bbr_update_bw(struct sock *sk, const struct rate_sample *rs)
   *
   * Max extra_acked is clamped by cwnd and bw * bbr_extra_acked_max_us (100 ms).
   * Max filter is an approximate sliding window of 5-10 (packet timed) round
@@ -3991,7 +4054,7 @@ index 146792cd26fe..f4f477a69917 100644
   */
  static void bbr_update_ack_aggregation(struct sock *sk,
  				       const struct rate_sample *rs)
-@@ -819,15 +802,19 @@ static void bbr_update_ack_aggregation(struct sock *sk,
+@@ -820,15 +802,19 @@ static void bbr_update_ack_aggregation(struct sock *sk,
  	u32 epoch_us, expected_acked, extra_acked;
  	struct bbr *bbr = inet_csk_ca(sk);
  	struct tcp_sock *tp = tcp_sk(sk);
@@ -4013,7 +4076,7 @@ index 146792cd26fe..f4f477a69917 100644
  			bbr->extra_acked_win_rtts = 0;
  			bbr->extra_acked_win_idx = bbr->extra_acked_win_idx ?
  						   0 : 1;
-@@ -861,49 +848,6 @@ static void bbr_update_ack_aggregation(struct sock *sk,
+@@ -862,49 +848,6 @@ static void bbr_update_ack_aggregation(struct sock *sk,
  		bbr->extra_acked[bbr->extra_acked_win_idx] = extra_acked;
  }
  
@@ -4063,7 +4126,7 @@ index 146792cd26fe..f4f477a69917 100644
  static void bbr_check_probe_rtt_done(struct sock *sk)
  {
  	struct tcp_sock *tp = tcp_sk(sk);
-@@ -913,9 +857,9 @@ static void bbr_check_probe_rtt_done(struct sock *sk)
+@@ -914,9 +857,9 @@ static void bbr_check_probe_rtt_done(struct sock *sk)
  	      after(tcp_jiffies32, bbr->probe_rtt_done_stamp)))
  		return;
  
@@ -4075,7 +4138,7 @@ index 146792cd26fe..f4f477a69917 100644
  }
  
  /* The goal of PROBE_RTT mode is to have BBR flows cooperatively and
-@@ -941,23 +885,35 @@ static void bbr_update_min_rtt(struct sock *sk, const struct rate_sample *rs)
+@@ -942,23 +885,35 @@ static void bbr_update_min_rtt(struct sock *sk, const struct rate_sample *rs)
  {
  	struct tcp_sock *tp = tcp_sk(sk);
  	struct bbr *bbr = inet_csk_ca(sk);
@@ -4120,7 +4183,7 @@ index 146792cd26fe..f4f477a69917 100644
  	}
  
  	if (bbr->mode == BBR_PROBE_RTT) {
-@@ -966,9 +922,9 @@ static void bbr_update_min_rtt(struct sock *sk, const struct rate_sample *rs)
+@@ -967,9 +922,9 @@ static void bbr_update_min_rtt(struct sock *sk, const struct rate_sample *rs)
  			(tp->delivered + tcp_packets_in_flight(tp)) ? : 1;
  		/* Maintain min packets in flight for max(200 ms, 1 round). */
  		if (!bbr->probe_rtt_done_stamp &&
@@ -4132,7 +4195,7 @@ index 146792cd26fe..f4f477a69917 100644
  			bbr->probe_rtt_round_done = 0;
  			bbr->next_rtt_delivered = tp->delivered;
  		} else if (bbr->probe_rtt_done_stamp) {
-@@ -989,18 +945,20 @@ static void bbr_update_gains(struct sock *sk)
+@@ -990,18 +945,20 @@ static void bbr_update_gains(struct sock *sk)
  
  	switch (bbr->mode) {
  	case BBR_STARTUP:
@@ -4161,7 +4224,7 @@ index 146792cd26fe..f4f477a69917 100644
  		break;
  	case BBR_PROBE_RTT:
  		bbr->pacing_gain = BBR_UNIT;
-@@ -1012,144 +970,1387 @@ static void bbr_update_gains(struct sock *sk)
+@@ -1013,144 +970,1387 @@ static void bbr_update_gains(struct sock *sk)
  	}
  }
  
@@ -5623,7 +5686,7 @@ index 146792cd26fe..f4f477a69917 100644
  	.get_info	= bbr_get_info,
  	.set_state	= bbr_set_state,
  };
-@@ -1160,10 +2361,11 @@ BTF_SET8_START(tcp_bbr_check_kfunc_ids)
+@@ -1161,10 +2361,11 @@ BTF_SET8_START(tcp_bbr_check_kfunc_ids)
  BTF_ID_FLAGS(func, bbr_init)
  BTF_ID_FLAGS(func, bbr_main)
  BTF_ID_FLAGS(func, bbr_sndbuf_expand)
@@ -5636,7 +5699,7 @@ index 146792cd26fe..f4f477a69917 100644
  BTF_ID_FLAGS(func, bbr_set_state)
  #endif
  #endif
-@@ -1198,5 +2400,12 @@ MODULE_AUTHOR("Van Jacobson <vanj@google.com>");
+@@ -1199,5 +2400,12 @@ MODULE_AUTHOR("Van Jacobson <vanj@google.com>");
  MODULE_AUTHOR("Neal Cardwell <ncardwell@google.com>");
  MODULE_AUTHOR("Yuchung Cheng <ycheng@google.com>");
  MODULE_AUTHOR("Soheil Hassas Yeganeh <soheil@google.com>");
@@ -5662,7 +5725,7 @@ index 1b34050a7538..66d40449b3f4 100644
  		icsk->icsk_ca_ops->init(sk);
  	if (tcp_ca_needs_ecn(sk))
 diff --git a/net/ipv4/tcp_input.c b/net/ipv4/tcp_input.c
-index e6c492954942..602d285344f9 100644
+index 701cb87043f2..5ef8d64b5495 100644
 --- a/net/ipv4/tcp_input.c
 +++ b/net/ipv4/tcp_input.c
 @@ -371,7 +371,7 @@ static void __tcp_ecn_check_ce(struct sock *sk, const struct sk_buff *skb)
@@ -5683,7 +5746,7 @@ index e6c492954942..602d285344f9 100644
  			tcp_ca_event(sk, CA_EVENT_ECN_NO_CE);
  		tp->ecn_flags |= TCP_ECN_SEEN;
  		break;
-@@ -1096,7 +1096,12 @@ static void tcp_verify_retransmit_hint(struct tcp_sock *tp, struct sk_buff *skb)
+@@ -1119,7 +1119,12 @@ static void tcp_verify_retransmit_hint(struct tcp_sock *tp, struct sk_buff *skb)
   */
  static void tcp_notify_skb_loss_event(struct tcp_sock *tp, const struct sk_buff *skb)
  {
@@ -5696,7 +5759,7 @@ index e6c492954942..602d285344f9 100644
  }
  
  void tcp_mark_skb_lost(struct sock *sk, struct sk_buff *skb)
-@@ -1477,6 +1482,17 @@ static bool tcp_shifted_skb(struct sock *sk, struct sk_buff *prev,
+@@ -1500,6 +1505,17 @@ static bool tcp_shifted_skb(struct sock *sk, struct sk_buff *prev,
  	WARN_ON_ONCE(tcp_skb_pcount(skb) < pcount);
  	tcp_skb_pcount_add(skb, -pcount);
  
@@ -5714,7 +5777,7 @@ index e6c492954942..602d285344f9 100644
  	/* When we're adding to gso_segs == 1, gso_size will be zero,
  	 * in theory this shouldn't be necessary but as long as DSACK
  	 * code can come after this skb later on it's better to keep
-@@ -3706,7 +3722,8 @@ static void tcp_replace_ts_recent(struct tcp_sock *tp, u32 seq)
+@@ -3768,7 +3784,8 @@ static void tcp_replace_ts_recent(struct tcp_sock *tp, u32 seq)
  /* This routine deals with acks during a TLP episode and ends an episode by
   * resetting tlp_high_seq. Ref: TLP algorithm in draft-ietf-tcpm-rack
   */
@@ -5724,7 +5787,7 @@ index e6c492954942..602d285344f9 100644
  {
  	struct tcp_sock *tp = tcp_sk(sk);
  
-@@ -3723,6 +3740,7 @@ static void tcp_process_tlp_ack(struct sock *sk, u32 ack, int flag)
+@@ -3785,6 +3802,7 @@ static void tcp_process_tlp_ack(struct sock *sk, u32 ack, int flag)
  		/* ACK advances: there was a loss, so reduce cwnd. Reset
  		 * tlp_high_seq in tcp_init_cwnd_reduction()
  		 */
@@ -5732,7 +5795,7 @@ index e6c492954942..602d285344f9 100644
  		tcp_init_cwnd_reduction(sk);
  		tcp_set_ca_state(sk, TCP_CA_CWR);
  		tcp_end_cwnd_reduction(sk);
-@@ -3733,6 +3751,11 @@ static void tcp_process_tlp_ack(struct sock *sk, u32 ack, int flag)
+@@ -3795,6 +3813,11 @@ static void tcp_process_tlp_ack(struct sock *sk, u32 ack, int flag)
  			     FLAG_NOT_DUP | FLAG_DATA_SACKED))) {
  		/* Pure dupack: original and TLP probe arrived; no loss */
  		tp->tlp_high_seq = 0;
@@ -5744,7 +5807,7 @@ index e6c492954942..602d285344f9 100644
  	}
  }
  
-@@ -3841,6 +3864,7 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
+@@ -3903,6 +3926,7 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
  
  	prior_fack = tcp_is_sack(tp) ? tcp_highest_sack_seq(tp) : tp->snd_una;
  	rs.prior_in_flight = tcp_packets_in_flight(tp);
@@ -5752,7 +5815,7 @@ index e6c492954942..602d285344f9 100644
  
  	/* ts_recent update must be made after we are sure that the packet
  	 * is in window.
-@@ -3915,7 +3939,7 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
+@@ -3977,7 +4001,7 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
  	tcp_rack_update_reo_wnd(sk, &rs);
  
  	if (tp->tlp_high_seq)
@@ -5761,7 +5824,7 @@ index e6c492954942..602d285344f9 100644
  
  	if (tcp_ack_is_dubious(sk, flag)) {
  		if (!(flag & (FLAG_SND_UNA_ADVANCED |
-@@ -3939,6 +3963,7 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
+@@ -4001,6 +4025,7 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
  	delivered = tcp_newly_delivered(sk, delivered, flag);
  	lost = tp->lost - lost;			/* freshly marked lost */
  	rs.is_ack_delayed = !!(flag & FLAG_ACK_MAYBE_DELAYED);
@@ -5769,7 +5832,7 @@ index e6c492954942..602d285344f9 100644
  	tcp_rate_gen(sk, delivered, lost, is_sack_reneg, sack_state.rate);
  	tcp_cong_control(sk, ack, delivered, flag, sack_state.rate);
  	tcp_xmit_recovery(sk, rexmit);
-@@ -3958,7 +3983,7 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
+@@ -4020,7 +4045,7 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
  	tcp_ack_probe(sk);
  
  	if (tp->tlp_high_seq)
@@ -5778,7 +5841,7 @@ index e6c492954942..602d285344f9 100644
  	return 1;
  
  old_ack:
-@@ -5560,13 +5585,14 @@ static void __tcp_ack_snd_check(struct sock *sk, int ofo_possible)
+@@ -5671,13 +5696,14 @@ static void __tcp_ack_snd_check(struct sock *sk, int ofo_possible)
  
  	    /* More than one full frame received... */
  	if (((tp->rcv_nxt - tp->rcv_wup) > inet_csk(sk)->icsk_ack.rcv_mss &&
@@ -5796,10 +5859,10 @@ index e6c492954942..602d285344f9 100644
  	    tcp_in_quickack_mode(sk) ||
  	    /* Protocol state mandates a one-time immediate ACK */
 diff --git a/net/ipv4/tcp_minisocks.c b/net/ipv4/tcp_minisocks.c
-index b98d476f1594..ca5c89cc7dc8 100644
+index 9e85f2a0bddd..914a75bb0734 100644
 --- a/net/ipv4/tcp_minisocks.c
 +++ b/net/ipv4/tcp_minisocks.c
-@@ -439,6 +439,8 @@ void tcp_ca_openreq_child(struct sock *sk, const struct dst_entry *dst)
+@@ -464,6 +464,8 @@ void tcp_ca_openreq_child(struct sock *sk, const struct dst_entry *dst)
  	u32 ca_key = dst_metric(dst, RTAX_CC_ALGO);
  	bool ca_got_dst = false;
  
@@ -5809,7 +5872,7 @@ index b98d476f1594..ca5c89cc7dc8 100644
  		const struct tcp_congestion_ops *ca;
  
 diff --git a/net/ipv4/tcp_output.c b/net/ipv4/tcp_output.c
-index cab3c1162c3a..dda072bc9315 100644
+index e3167ad96567..08fe7a626be1 100644
 --- a/net/ipv4/tcp_output.c
 +++ b/net/ipv4/tcp_output.c
 @@ -332,10 +332,9 @@ static void tcp_ecn_send_syn(struct sock *sk, struct sk_buff *skb)
@@ -5844,7 +5907,7 @@ index cab3c1162c3a..dda072bc9315 100644
  			/* ACK or retransmitted segment: clear ECT|CE */
  			INET_ECN_dontxmit(sk);
  		}
-@@ -1546,7 +1549,7 @@ int tcp_fragment(struct sock *sk, enum tcp_queue tcp_queue,
+@@ -1593,7 +1596,7 @@ int tcp_fragment(struct sock *sk, enum tcp_queue tcp_queue,
  {
  	struct tcp_sock *tp = tcp_sk(sk);
  	struct sk_buff *buff;
@@ -5853,7 +5916,7 @@ index cab3c1162c3a..dda072bc9315 100644
  	long limit;
  	int nlen;
  	u8 flags;
-@@ -1621,6 +1624,30 @@ int tcp_fragment(struct sock *sk, enum tcp_queue tcp_queue,
+@@ -1668,6 +1671,30 @@ int tcp_fragment(struct sock *sk, enum tcp_queue tcp_queue,
  
  		if (diff)
  			tcp_adjust_pcount(sk, skb, diff);
@@ -5884,7 +5947,7 @@ index cab3c1162c3a..dda072bc9315 100644
  	}
  
  	/* Link BUFF into the send queue. */
-@@ -1996,13 +2023,12 @@ static u32 tcp_tso_autosize(const struct sock *sk, unsigned int mss_now,
+@@ -2025,13 +2052,12 @@ static u32 tcp_tso_autosize(const struct sock *sk, unsigned int mss_now,
  static u32 tcp_tso_segs(struct sock *sk, unsigned int mss_now)
  {
  	const struct tcp_congestion_ops *ca_ops = inet_csk(sk)->icsk_ca_ops;
@@ -5903,7 +5966,7 @@ index cab3c1162c3a..dda072bc9315 100644
  	return min_t(u32, tso_segs, sk->sk_gso_max_segs);
  }
  
-@@ -2701,6 +2727,7 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
+@@ -2731,6 +2757,7 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
  			skb_set_delivery_time(skb, tp->tcp_wstamp_ns, true);
  			list_move_tail(&skb->tcp_tsorted_anchor, &tp->tsorted_sent_queue);
  			tcp_init_tso_segs(skb, mss_now);
@@ -5911,7 +5974,7 @@ index cab3c1162c3a..dda072bc9315 100644
  			goto repair; /* Skip network transmission */
  		}
  
-@@ -2914,6 +2941,7 @@ void tcp_send_loss_probe(struct sock *sk)
+@@ -2944,6 +2971,7 @@ void tcp_send_loss_probe(struct sock *sk)
  	if (WARN_ON(!skb || !tcp_skb_pcount(skb)))
  		goto rearm_timer;
  
@@ -6000,10 +6063,10 @@ index a8f6d9d06f2e..8737f2134648 100644
  	rs->interval_us = max(snd_us, ack_us);
  
 diff --git a/net/ipv4/tcp_timer.c b/net/ipv4/tcp_timer.c
-index 984ab4a0421e..037f54263aee 100644
+index 1f9f6c1c196b..b6cb292779a6 100644
 --- a/net/ipv4/tcp_timer.c
 +++ b/net/ipv4/tcp_timer.c
-@@ -653,6 +653,7 @@ void tcp_write_timer_handler(struct sock *sk)
+@@ -678,6 +678,7 @@ void tcp_write_timer_handler(struct sock *sk)
  		return;
  	}
  
@@ -6014,14 +6077,15 @@ index 984ab4a0421e..037f54263aee 100644
 -- 
 2.43.0
 
-From 04a07002f646f55dd7eab762ff7f659231ffc212 Mon Sep 17 00:00:00 2001
+From 4c26a133f33abad37d50200b892d552fcca30cc8 Mon Sep 17 00:00:00 2001
 From: Peter Jung <admin@ptr1337.dev>
-Date: Wed, 29 Nov 2023 19:56:03 +0100
-Subject: [PATCH 4/7] cachy
+Date: Fri, 22 Dec 2023 17:53:18 +0100
+Subject: [PATCH 4/8] cachy
 
 Signed-off-by: Peter Jung <admin@ptr1337.dev>
 ---
  .../admin-guide/kernel-parameters.txt         |    9 +
+ Documentation/admin-guide/sysctl/vm.rst       |   72 +
  Makefile                                      |    3 +
  arch/x86/Kconfig.cpu                          |  427 +-
  arch/x86/Makefile                             |   44 +-
@@ -6044,30 +6108,35 @@ Signed-off-by: Peter Jung <admin@ptr1337.dev>
  drivers/platform/x86/Makefile                 |    4 +
  drivers/platform/x86/legion-laptop.c          | 5858 +++++++++++++++++
  drivers/platform/x86/steamdeck.c              |  523 ++
- include/linux/mm.h                            |    2 +-
+ include/linux/mm.h                            |    9 +-
  include/linux/pagemap.h                       |    2 +-
  include/linux/user_namespace.h                |    4 +
  init/Kconfig                                  |   26 +
  kernel/Kconfig.hz                             |   24 +
  kernel/fork.c                                 |   14 +
- kernel/sysctl.c                               |   12 +
+ kernel/sched/fair.c                           |   13 +
+ kernel/sysctl.c                               |   39 +
  kernel/user_namespace.c                       |    7 +
- mm/Kconfig                                    |    2 +-
+ lib/scatterlist.c                             |   23 +-
+ mm/Kconfig                                    |   65 +-
+ mm/internal.h                                 |    1 +
+ mm/list_lru.c                                 |    4 +
  mm/page-writeback.c                           |    8 +
+ mm/page_alloc.c                               |   42 +-
  mm/swap.c                                     |    5 +
  mm/vmpressure.c                               |    4 +
- mm/vmscan.c                                   |    8 +
- 36 files changed, 8332 insertions(+), 47 deletions(-)
+ mm/vmscan.c                                   |  202 +-
+ 42 files changed, 8719 insertions(+), 106 deletions(-)
  create mode 100644 drivers/i2c/busses/i2c-nct6775.c
  create mode 100644 drivers/pci/controller/intel-nvme-remap.c
  create mode 100644 drivers/platform/x86/legion-laptop.c
  create mode 100644 drivers/platform/x86/steamdeck.c
 
 diff --git a/Documentation/admin-guide/kernel-parameters.txt b/Documentation/admin-guide/kernel-parameters.txt
-index 6e121fdb68f9..0fba49520140 100644
+index cbfa63a87e4a..5f86793358d9 100644
 --- a/Documentation/admin-guide/kernel-parameters.txt
 +++ b/Documentation/admin-guide/kernel-parameters.txt
-@@ -4292,6 +4292,15 @@
+@@ -4362,6 +4362,15 @@
  		nomsi		[MSI] If the PCI_MSI kernel config parameter is
  				enabled, this kernel boot option can be used to
  				disable the use of MSI interrupts system-wide.
@@ -6083,11 +6152,108 @@ index 6e121fdb68f9..0fba49520140 100644
  		noioapicquirk	[APIC] Disable all boot interrupt quirks.
  				Safety option to keep boot IRQs enabled. This
  				should never be necessary.
+diff --git a/Documentation/admin-guide/sysctl/vm.rst b/Documentation/admin-guide/sysctl/vm.rst
+index c59889de122b..92745ab350e7 100644
+--- a/Documentation/admin-guide/sysctl/vm.rst
++++ b/Documentation/admin-guide/sysctl/vm.rst
+@@ -25,6 +25,9 @@ files can be found in mm/swap.c.
+ Currently, these files are in /proc/sys/vm:
+ 
+ - admin_reserve_kbytes
++- anon_min_ratio
++- clean_low_ratio
++- clean_min_ratio
+ - compact_memory
+ - compaction_proactiveness
+ - compact_unevictable_allowed
+@@ -106,6 +109,67 @@ On x86_64 this is about 128MB.
+ Changing this takes effect whenever an application requests memory.
+ 
+ 
++anon_min_ratio
++==============
++
++This knob provides *hard* protection of anonymous pages. The anonymous pages
++on the current node won't be reclaimed under any conditions when their amount
++is below vm.anon_min_ratio.
++
++This knob may be used to prevent excessive swap thrashing when anonymous
++memory is low (for example, when memory is going to be overfilled by
++compressed data of zram module).
++
++Setting this value too high (close to 100) can result in inability to
++swap and can lead to early OOM under memory pressure.
++
++The unit of measurement is the percentage of the total memory of the node.
++
++The default value is 0.
++
++
++clean_low_ratio
++================
++
++This knob provides *best-effort* protection of clean file pages. The file pages
++on the current node won't be reclaimed under memory pressure when the amount of
++clean file pages is below vm.clean_low_ratio *unless* we threaten to OOM.
++
++Protection of clean file pages using this knob may be used when swapping is
++still possible to
++  - prevent disk I/O thrashing under memory pressure;
++  - improve performance in disk cache-bound tasks under memory pressure.
++
++Setting it to a high value may result in a early eviction of anonymous pages
++into the swap space by attempting to hold the protected amount of clean file
++pages in memory.
++
++The unit of measurement is the percentage of the total memory of the node.
++
++The default value is 0.
++
++
++clean_min_ratio
++================
++
++This knob provides *hard* protection of clean file pages. The file pages on the
++current node won't be reclaimed under memory pressure when the amount of clean
++file pages is below vm.clean_min_ratio.
++
++Hard protection of clean file pages using this knob may be used to
++  - prevent disk I/O thrashing under memory pressure even with no free swap space;
++  - improve performance in disk cache-bound tasks under memory pressure;
++  - avoid high latency and prevent livelock in near-OOM conditions.
++
++Setting it to a high value may result in a early out-of-memory condition due to
++the inability to reclaim the protected amount of clean file pages when other
++types of pages cannot be reclaimed.
++
++The unit of measurement is the percentage of the total memory of the node.
++
++The default value is 1.
++
++
+ compact_memory
+ ==============
+ 
+@@ -910,6 +974,14 @@ be 133 (x + 2x = 200, 2x = 133.33).
+ At 0, the kernel will not initiate swap until the amount of free and
+ file-backed pages is less than the high watermark in a zone.
+ 
++This knob has no effect if the amount of clean file pages on the current
++node is below vm.clean_low_ratio or vm.clean_min_ratio. In this case,
++only anonymous pages can be reclaimed.
++
++If the number of anonymous pages on the current node is below
++vm.anon_min_ratio, then only file pages can be reclaimed with
++any vm.swappiness value.
++
+ 
+ unprivileged_userfaultfd
+ ========================
 diff --git a/Makefile b/Makefile
-index 891ef640396c..3606f38488ce 100644
+index ee995fc2b0e5..a48160cce2ae 100644
 --- a/Makefile
 +++ b/Makefile
-@@ -819,6 +819,9 @@ KBUILD_CFLAGS	+= -fno-delete-null-pointer-checks
+@@ -807,6 +807,9 @@ KBUILD_CFLAGS	+= -fno-delete-null-pointer-checks
  ifdef CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE
  KBUILD_CFLAGS += -O2
  KBUILD_RUSTFLAGS += -Copt-level=2
@@ -6631,10 +6797,10 @@ index 00468adf180f..46cc91cb622f 100644
  config IA32_FEAT_CTL
  	def_bool y
 diff --git a/arch/x86/Makefile b/arch/x86/Makefile
-index 5bfe5caaa444..b7717a5e10ed 100644
+index 1a068de12a56..23b2ec69d8be 100644
 --- a/arch/x86/Makefile
 +++ b/arch/x86/Makefile
-@@ -151,8 +151,48 @@ else
+@@ -152,8 +152,48 @@ else
          # FIXME - should be integrated in Makefile.cpu (Makefile_32.cpu)
          cflags-$(CONFIG_MK8)		+= -march=k8
          cflags-$(CONFIG_MPSC)		+= -march=nocona
@@ -6824,14 +6990,14 @@ index ddb798603201..7c20387d8202 100644
  }
 -#endif
 diff --git a/block/bfq-iosched.c b/block/bfq-iosched.c
-index 3cce6de464a7..7bdaa2e3a8ee 100644
+index 3cce6de464a7..2bd54d089198 100644
 --- a/block/bfq-iosched.c
 +++ b/block/bfq-iosched.c
 @@ -7627,6 +7627,7 @@ MODULE_ALIAS("bfq-iosched");
  static int __init bfq_init(void)
  {
  	int ret;
-+	char msg[60] = "BFQ I/O-scheduler: BFQ-CachyOS v6.6";
++	char msg[60] = "BFQ I/O-scheduler: BFQ-CachyOS v6.7";
  
  #ifdef CONFIG_BFQ_GROUP_IOSCHED
  	ret = blkcg_policy_register(&blkcg_policy_bfq);
@@ -6848,7 +7014,7 @@ index 3cce6de464a7..7bdaa2e3a8ee 100644
  
  slab_kill:
 diff --git a/drivers/Makefile b/drivers/Makefile
-index 1bec7819a837..dcdb0ddb7b66 100644
+index d828329c268d..ea3d3c303a43 100644
 --- a/drivers/Makefile
 +++ b/drivers/Makefile
 @@ -66,15 +66,8 @@ obj-y				+= char/
@@ -6883,10 +7049,10 @@ index 1bec7819a837..dcdb0ddb7b66 100644
  obj-$(CONFIG_MTD)		+= mtd/
  obj-$(CONFIG_SPI)		+= spi/
 diff --git a/drivers/ata/ahci.c b/drivers/ata/ahci.c
-index 08745e7db820..07483490913d 100644
+index 3a5f3255f51b..8ef68726e2d0 100644
 --- a/drivers/ata/ahci.c
 +++ b/drivers/ata/ahci.c
-@@ -1524,7 +1524,7 @@ static irqreturn_t ahci_thunderx_irq_handler(int irq, void *dev_instance)
+@@ -1530,7 +1530,7 @@ static irqreturn_t ahci_thunderx_irq_handler(int irq, void *dev_instance)
  }
  #endif
  
@@ -6895,7 +7061,7 @@ index 08745e7db820..07483490913d 100644
  		struct ahci_host_priv *hpriv)
  {
  	int i;
-@@ -1537,7 +1537,7 @@ static void ahci_remap_check(struct pci_dev *pdev, int bar,
+@@ -1543,7 +1543,7 @@ static void ahci_remap_check(struct pci_dev *pdev, int bar,
  	    pci_resource_len(pdev, bar) < SZ_512K ||
  	    bar != AHCI_PCI_BAR_STANDARD ||
  	    !(readl(hpriv->mmio + AHCI_VSCAP) & 1))
@@ -6904,7 +7070,7 @@ index 08745e7db820..07483490913d 100644
  
  	cap = readq(hpriv->mmio + AHCI_REMAP_CAP);
  	for (i = 0; i < AHCI_MAX_REMAP; i++) {
-@@ -1552,18 +1552,11 @@ static void ahci_remap_check(struct pci_dev *pdev, int bar,
+@@ -1558,18 +1558,11 @@ static void ahci_remap_check(struct pci_dev *pdev, int bar,
  	}
  
  	if (!hpriv->remapped_nvme)
@@ -6927,7 +7093,7 @@ index 08745e7db820..07483490913d 100644
  }
  
  static int ahci_get_irq_vector(struct ata_host *host, int port)
-@@ -1783,7 +1776,9 @@ static int ahci_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
+@@ -1789,7 +1782,9 @@ static int ahci_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
  	hpriv->mmio = pcim_iomap_table(pdev)[ahci_pci_bar];
  
  	/* detect remapped nvme devices */
@@ -6959,7 +7125,7 @@ index 438c9e75a04d..1bbfeca5f01e 100644
  	  This driver adds a CPUFreq driver which utilizes a fine grain
  	  processor performance frequency control range instead of legacy
 diff --git a/drivers/i2c/busses/Kconfig b/drivers/i2c/busses/Kconfig
-index 97d27e01a6ee..6a5ca108ac71 100644
+index 28eb48dd5b32..1cf4c700b108 100644
 --- a/drivers/i2c/busses/Kconfig
 +++ b/drivers/i2c/busses/Kconfig
 @@ -230,6 +230,15 @@ config I2C_CHT_WC
@@ -6979,7 +7145,7 @@ index 97d27e01a6ee..6a5ca108ac71 100644
  	tristate "Nvidia nForce2, nForce3 and nForce4"
  	depends on PCI
 diff --git a/drivers/i2c/busses/Makefile b/drivers/i2c/busses/Makefile
-index af56fe2c75c0..76be74584719 100644
+index 3757b9391e60..a663df420af5 100644
 --- a/drivers/i2c/busses/Makefile
 +++ b/drivers/i2c/busses/Makefile
 @@ -20,6 +20,7 @@ obj-$(CONFIG_I2C_CHT_WC)	+= i2c-cht-wc.o
@@ -7663,10 +7829,10 @@ index 809fbd014cd6..d54b35b147ee 100644
  	/* If the SMBus is still busy, we give up */
  	if (timeout == MAX_TIMEOUT) {
 diff --git a/drivers/md/dm-crypt.c b/drivers/md/dm-crypt.c
-index 17ffbf7fbe73..5519e5ba9f0e 100644
+index 2ae8560b6a14..a6083da0b73a 100644
 --- a/drivers/md/dm-crypt.c
 +++ b/drivers/md/dm-crypt.c
-@@ -3249,6 +3249,11 @@ static int crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
+@@ -3242,6 +3242,11 @@ static int crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
  			goto bad;
  	}
  
@@ -7679,7 +7845,7 @@ index 17ffbf7fbe73..5519e5ba9f0e 100644
  	if (ret < 0)
  		goto bad;
 diff --git a/drivers/pci/controller/Makefile b/drivers/pci/controller/Makefile
-index 37c8663de7fe..897d19f92ede 100644
+index f2b19e6174af..4fef4b174321 100644
 --- a/drivers/pci/controller/Makefile
 +++ b/drivers/pci/controller/Makefile
 @@ -1,4 +1,10 @@
@@ -8162,7 +8328,7 @@ index 000000000000..e105e6f5cc91
 +MODULE_AUTHOR("Daniel Drake <drake@endlessm.com>");
 +MODULE_LICENSE("GPL v2");
 diff --git a/drivers/pci/quirks.c b/drivers/pci/quirks.c
-index ae95d0950772..07596cfed8b7 100644
+index ea476252280a..59be43f15d86 100644
 --- a/drivers/pci/quirks.c
 +++ b/drivers/pci/quirks.c
 @@ -3722,6 +3722,106 @@ static void quirk_no_bus_reset(struct pci_dev *dev)
@@ -8281,7 +8447,7 @@ index ae95d0950772..07596cfed8b7 100644
  };
  
 diff --git a/drivers/platform/x86/Kconfig b/drivers/platform/x86/Kconfig
-index 07eea525091b..b79ec3b9f39a 100644
+index c94f31a5c6a3..5d81029065cf 100644
 --- a/drivers/platform/x86/Kconfig
 +++ b/drivers/platform/x86/Kconfig
 @@ -643,6 +643,16 @@ config THINKPAD_LMI
@@ -8301,7 +8467,7 @@ index 07eea525091b..b79ec3b9f39a 100644
  source "drivers/platform/x86/intel/Kconfig"
  
  config MSI_EC
-@@ -1099,6 +1109,20 @@ config SEL3350_PLATFORM
+@@ -1110,6 +1120,20 @@ config SEL3350_PLATFORM
  	  To compile this driver as a module, choose M here: the module
  	  will be called sel3350-platform.
  
@@ -8323,7 +8489,7 @@ index 07eea525091b..b79ec3b9f39a 100644
  
  config P2SB
 diff --git a/drivers/platform/x86/Makefile b/drivers/platform/x86/Makefile
-index b457de5abf7d..ecfbaf2e4e86 100644
+index c7a18e95ad8c..e257748a2181 100644
 --- a/drivers/platform/x86/Makefile
 +++ b/drivers/platform/x86/Makefile
 @@ -65,6 +65,7 @@ obj-$(CONFIG_LENOVO_YMC)	+= lenovo-ymc.o
@@ -8334,7 +8500,7 @@ index b457de5abf7d..ecfbaf2e4e86 100644
  obj-$(CONFIG_YOGABOOK)		+= lenovo-yogabook.o
  
  # Intel
-@@ -138,3 +139,6 @@ obj-$(CONFIG_WINMATE_FM07_KEYS)		+= winmate-fm07-keys.o
+@@ -141,3 +142,6 @@ obj-$(CONFIG_WINMATE_FM07_KEYS)		+= winmate-fm07-keys.o
  
  # SEL
  obj-$(CONFIG_SEL3350_PLATFORM)		+= sel3350-platform.o
@@ -14735,10 +14901,10 @@ index 000000000000..77a6677ec19e
 +MODULE_DESCRIPTION("Steam Deck ACPI platform driver");
 +MODULE_LICENSE("GPL");
 diff --git a/include/linux/mm.h b/include/linux/mm.h
-index bf5d0b1b16f4..5a62f3ab1b80 100644
+index da5219b48d52..bfae4549d641 100644
 --- a/include/linux/mm.h
 +++ b/include/linux/mm.h
-@@ -191,7 +191,7 @@ static inline void __mm_zero_struct_page(struct page *page)
+@@ -191,10 +191,17 @@ static inline void __mm_zero_struct_page(struct page *page)
   * that.
   */
  #define MAPCOUNT_ELF_CORE_MARGIN	(5)
@@ -14747,11 +14913,21 @@ index bf5d0b1b16f4..5a62f3ab1b80 100644
  
  extern int sysctl_max_map_count;
  
++extern u8 sysctl_anon_min_ratio;
++extern u8 sysctl_clean_low_ratio;
++extern u8 sysctl_clean_min_ratio;
++int vm_workingset_protection_update_handler(
++	struct ctl_table *table, int write,
++	void __user *buffer, size_t *lenp, loff_t *ppos);
++
+ extern unsigned long sysctl_user_reserve_kbytes;
+ extern unsigned long sysctl_admin_reserve_kbytes;
+ 
 diff --git a/include/linux/pagemap.h b/include/linux/pagemap.h
-index 8c9608b217b0..0bdee469ff93 100644
+index 06142ff7f9ce..fd51aced7f47 100644
 --- a/include/linux/pagemap.h
 +++ b/include/linux/pagemap.h
-@@ -1278,7 +1278,7 @@ struct readahead_control {
+@@ -1251,7 +1251,7 @@ struct readahead_control {
  		._index = i,						\
  	}
  
@@ -14761,10 +14937,10 @@ index 8c9608b217b0..0bdee469ff93 100644
  void page_cache_ra_unbounded(struct readahead_control *,
  		unsigned long nr_to_read, unsigned long lookahead_count);
 diff --git a/include/linux/user_namespace.h b/include/linux/user_namespace.h
-index 45f09bec02c4..87b20e2ee274 100644
+index 6030a8235617..60b7fe5fa74a 100644
 --- a/include/linux/user_namespace.h
 +++ b/include/linux/user_namespace.h
-@@ -148,6 +148,8 @@ static inline void set_userns_rlimit_max(struct user_namespace *ns,
+@@ -156,6 +156,8 @@ static inline void set_userns_rlimit_max(struct user_namespace *ns,
  
  #ifdef CONFIG_USER_NS
  
@@ -14773,7 +14949,7 @@ index 45f09bec02c4..87b20e2ee274 100644
  static inline struct user_namespace *get_user_ns(struct user_namespace *ns)
  {
  	if (ns)
-@@ -181,6 +183,8 @@ extern bool current_in_userns(const struct user_namespace *target_ns);
+@@ -189,6 +191,8 @@ extern bool current_in_userns(const struct user_namespace *target_ns);
  struct ns_common *ns_get_owner(struct ns_common *ns);
  #else
  
@@ -14783,7 +14959,7 @@ index 45f09bec02c4..87b20e2ee274 100644
  {
  	return &init_user_ns;
 diff --git a/init/Kconfig b/init/Kconfig
-index 6d35728b94b2..9dee4c100348 100644
+index 9ffb103fc927..27d87b3569dd 100644
 --- a/init/Kconfig
 +++ b/init/Kconfig
 @@ -123,6 +123,10 @@ config THREAD_INFO_IN_TASK
@@ -14876,7 +15052,7 @@ index 38ef6d06888e..0f78364efd4f 100644
  
  config SCHED_HRTICK
 diff --git a/kernel/fork.c b/kernel/fork.c
-index 177ce7438db6..6ecece1407fc 100644
+index 10917c3e1f03..458360cf9bfb 100644
 --- a/kernel/fork.c
 +++ b/kernel/fork.c
 @@ -100,6 +100,10 @@
@@ -14890,7 +15066,7 @@ index 177ce7438db6..6ecece1407fc 100644
  #include <asm/pgalloc.h>
  #include <linux/uaccess.h>
  #include <asm/mmu_context.h>
-@@ -2260,6 +2264,10 @@ __latent_entropy struct task_struct *copy_process(
+@@ -2265,6 +2269,10 @@ __latent_entropy struct task_struct *copy_process(
  	if ((clone_flags & (CLONE_NEWUSER|CLONE_FS)) == (CLONE_NEWUSER|CLONE_FS))
  		return ERR_PTR(-EINVAL);
  
@@ -14901,7 +15077,7 @@ index 177ce7438db6..6ecece1407fc 100644
  	/*
  	 * Thread groups must share signals as well, and detached threads
  	 * can only be started up within the thread group.
-@@ -3413,6 +3421,12 @@ int ksys_unshare(unsigned long unshare_flags)
+@@ -3411,6 +3419,12 @@ int ksys_unshare(unsigned long unshare_flags)
  	if (unshare_flags & CLONE_NEWNS)
  		unshare_flags |= CLONE_FS;
  
@@ -14914,8 +15090,45 @@ index 177ce7438db6..6ecece1407fc 100644
  	err = check_unshare_flags(unshare_flags);
  	if (err)
  		goto bad_unshare_out;
+diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
+index d7a3c63a2171..6c58fda40043 100644
+--- a/kernel/sched/fair.c
++++ b/kernel/sched/fair.c
+@@ -73,10 +73,19 @@ unsigned int sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_LOG;
+  *
+  * (default: 0.75 msec * (1 + ilog(ncpus)), units: nanoseconds)
+  */
++#ifdef CONFIG_CACHY
++unsigned int sysctl_sched_base_slice			= 350000ULL;
++static unsigned int normalized_sysctl_sched_base_slice	= 350000ULL;
++#else
+ unsigned int sysctl_sched_base_slice			= 750000ULL;
+ static unsigned int normalized_sysctl_sched_base_slice	= 750000ULL;
++#endif
+ 
++#ifdef CONFIG_CACHY
++const_debug unsigned int sysctl_sched_migration_cost	= 300000UL;
++#else
+ const_debug unsigned int sysctl_sched_migration_cost	= 500000UL;
++#endif
+ 
+ int sched_thermal_decay_shift;
+ static int __init setup_sched_thermal_decay_shift(char *str)
+@@ -127,8 +136,12 @@ int __weak arch_asym_cpu_priority(int cpu)
+  *
+  * (default: 5 msec, units: microseconds)
+  */
++#ifdef CONFIG_CACHY
++static unsigned int sysctl_sched_cfs_bandwidth_slice		= 3000UL;
++#else
+ static unsigned int sysctl_sched_cfs_bandwidth_slice		= 5000UL;
+ #endif
++#endif
+ 
+ #ifdef CONFIG_NUMA_BALANCING
+ /* Restrict the NUMA promotion throughput (MB/s) for each target node. */
 diff --git a/kernel/sysctl.c b/kernel/sysctl.c
-index 354a2d294f52..4dc780aa3bcc 100644
+index 157f7ce2942d..4db407647823 100644
 --- a/kernel/sysctl.c
 +++ b/kernel/sysctl.c
 @@ -95,6 +95,9 @@ EXPORT_SYMBOL_GPL(sysctl_long_vals);
@@ -14944,8 +15157,42 @@ index 354a2d294f52..4dc780aa3bcc 100644
  #ifdef CONFIG_PROC_SYSCTL
  	{
  		.procname	= "tainted",
+@@ -2204,6 +2216,33 @@ static struct ctl_table vm_table[] = {
+ 		.extra1		= SYSCTL_ZERO,
+ 	},
+ #endif
++	{
++		.procname	= "anon_min_ratio",
++		.data		= &sysctl_anon_min_ratio,
++		.maxlen		= sizeof(u8),
++		.mode		= 0644,
++		.proc_handler	= &vm_workingset_protection_update_handler,
++		.extra1		= SYSCTL_ZERO,
++		.extra2		= SYSCTL_ONE_HUNDRED,
++	},
++	{
++		.procname	= "clean_low_ratio",
++		.data		= &sysctl_clean_low_ratio,
++		.maxlen		= sizeof(u8),
++		.mode		= 0644,
++		.proc_handler	= &vm_workingset_protection_update_handler,
++		.extra1		= SYSCTL_ZERO,
++		.extra2		= SYSCTL_ONE_HUNDRED,
++	},
++	{
++		.procname	= "clean_min_ratio",
++		.data		= &sysctl_clean_min_ratio,
++		.maxlen		= sizeof(u8),
++		.mode		= 0644,
++		.proc_handler	= &vm_workingset_protection_update_handler,
++		.extra1		= SYSCTL_ZERO,
++		.extra2		= SYSCTL_ONE_HUNDRED,
++	},
+ 	{
+ 		.procname	= "user_reserve_kbytes",
+ 		.data		= &sysctl_user_reserve_kbytes,
 diff --git a/kernel/user_namespace.c b/kernel/user_namespace.c
-index 1d8e47bed3f1..fec01d016a35 100644
+index eabe8bcc7042..ac9d1f702086 100644
 --- a/kernel/user_namespace.c
 +++ b/kernel/user_namespace.c
 @@ -22,6 +22,13 @@
@@ -14959,14 +15206,122 @@ index 1d8e47bed3f1..fec01d016a35 100644
 +int unprivileged_userns_clone;
 +#endif
 +
- static struct kmem_cache *user_ns_cachep __read_mostly;
+ static struct kmem_cache *user_ns_cachep __ro_after_init;
  static DEFINE_MUTEX(userns_state_mutex);
  
+diff --git a/lib/scatterlist.c b/lib/scatterlist.c
+index 68b45c82c37a..daedb8db4322 100644
+--- a/lib/scatterlist.c
++++ b/lib/scatterlist.c
+@@ -150,31 +150,12 @@ EXPORT_SYMBOL(sg_init_one);
+  */
+ static struct scatterlist *sg_kmalloc(unsigned int nents, gfp_t gfp_mask)
+ {
+-	if (nents == SG_MAX_SINGLE_ALLOC) {
+-		/*
+-		 * Kmemleak doesn't track page allocations as they are not
+-		 * commonly used (in a raw form) for kernel data structures.
+-		 * As we chain together a list of pages and then a normal
+-		 * kmalloc (tracked by kmemleak), in order to for that last
+-		 * allocation not to become decoupled (and thus a
+-		 * false-positive) we need to inform kmemleak of all the
+-		 * intermediate allocations.
+-		 */
+-		void *ptr = (void *) __get_free_page(gfp_mask);
+-		kmemleak_alloc(ptr, PAGE_SIZE, 1, gfp_mask);
+-		return ptr;
+-	} else
+-		return kmalloc_array(nents, sizeof(struct scatterlist),
+-				     gfp_mask);
++	return kmalloc_array(nents, sizeof(struct scatterlist), gfp_mask);
+ }
+ 
+ static void sg_kfree(struct scatterlist *sg, unsigned int nents)
+ {
+-	if (nents == SG_MAX_SINGLE_ALLOC) {
+-		kmemleak_free(sg);
+-		free_page((unsigned long) sg);
+-	} else
+-		kfree(sg);
++	kfree(sg);
+ }
+ 
+ /**
 diff --git a/mm/Kconfig b/mm/Kconfig
-index 264a2df5ecf5..0bf8853cc3a8 100644
+index 57cd378c73d6..959bb155fd24 100644
 --- a/mm/Kconfig
 +++ b/mm/Kconfig
-@@ -653,7 +653,7 @@ config COMPACTION
+@@ -510,6 +510,69 @@ config ARCH_WANT_OPTIMIZE_DAX_VMEMMAP
+ config ARCH_WANT_OPTIMIZE_HUGETLB_VMEMMAP
+ 	bool
+ 
++config ANON_MIN_RATIO
++	int "Default value for vm.anon_min_ratio"
++	depends on SYSCTL
++	range 0 100
++	default 0
++	help
++	  This option sets the default value for vm.anon_min_ratio sysctl knob.
++
++	  The vm.anon_min_ratio sysctl knob provides *hard* protection of
++	  anonymous pages. The anonymous pages on the current node won't be
++	  reclaimed under any conditions when their amount is below
++	  vm.anon_min_ratio. This knob may be used to prevent excessive swap
++	  thrashing when anonymous memory is low (for example, when memory is
++	  going to be overfilled by compressed data of zram module).
++
++	  Setting this value too high (close to MemTotal) can result in
++	  inability to swap and can lead to early OOM under memory pressure.
++
++config CLEAN_LOW_RATIO
++	int "Default value for vm.clean_low_ratio"
++	depends on SYSCTL
++	range 0 100
++	default 0
++	help
++	  This option sets the default value for vm.clean_low_ratio sysctl knob.
++
++	  The vm.clean_low_ratio sysctl knob provides *best-effort*
++	  protection of clean file pages. The file pages on the current node
++	  won't be reclaimed under memory pressure when the amount of clean file
++	  pages is below vm.clean_low_ratio *unless* we threaten to OOM.
++	  Protection of clean file pages using this knob may be used when
++	  swapping is still possible to
++	    - prevent disk I/O thrashing under memory pressure;
++	    - improve performance in disk cache-bound tasks under memory
++	      pressure.
++
++	  Setting it to a high value may result in a early eviction of anonymous
++	  pages into the swap space by attempting to hold the protected amount
++	  of clean file pages in memory.
++
++config CLEAN_MIN_RATIO
++	int "Default value for vm.clean_min_ratio"
++	depends on SYSCTL
++	range 0 100
++	default 1
++	help
++	  This option sets the default value for vm.clean_min_ratio sysctl knob.
++
++	  The vm.clean_min_ratio sysctl knob provides *hard* protection of
++	  clean file pages. The file pages on the current node won't be
++	  reclaimed under memory pressure when the amount of clean file pages is
++	  below vm.clean_min_ratio. Hard protection of clean file pages using
++	  this knob may be used to
++	    - prevent disk I/O thrashing under memory pressure even with no free
++	      swap space;
++	    - improve performance in disk cache-bound tasks under memory
++	      pressure;
++	    - avoid high latency and prevent livelock in near-OOM conditions.
++
++	  Setting it to a high value may result in a early out-of-memory condition
++	  due to the inability to reclaim the protected amount of clean file pages
++	  when other types of pages cannot be reclaimed.
++
+ config HAVE_MEMBLOCK_PHYS_MAP
+ 	bool
+ 
+@@ -654,7 +717,7 @@ config COMPACTION
  config COMPACT_UNEVICTABLE_DEFAULT
  	int
  	depends on COMPACTION
@@ -14975,8 +15330,42 @@ index 264a2df5ecf5..0bf8853cc3a8 100644
  	default 1
  
  #
+diff --git a/mm/internal.h b/mm/internal.h
+index b61034bd50f5..c6ab103807e7 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -448,6 +448,7 @@ extern void prep_compound_page(struct page *page, unsigned int order);
+ extern void post_alloc_hook(struct page *page, unsigned int order,
+ 					gfp_t gfp_flags);
+ extern int user_min_free_kbytes;
++extern atomic_long_t kswapd_waiters;
+ 
+ extern void free_unref_page(struct page *page, unsigned int order);
+ extern void free_unref_page_list(struct list_head *list);
+diff --git a/mm/list_lru.c b/mm/list_lru.c
+index a05e5bef3b40..0ead8e6651df 100644
+--- a/mm/list_lru.c
++++ b/mm/list_lru.c
+@@ -178,6 +178,7 @@ EXPORT_SYMBOL_GPL(list_lru_isolate_move);
+ unsigned long list_lru_count_one(struct list_lru *lru,
+ 				 int nid, struct mem_cgroup *memcg)
+ {
++#if defined(CONFIG_MEMCG) && !defined(CONFIG_SLOB)
+ 	struct list_lru_one *l;
+ 	long count;
+ 
+@@ -190,6 +191,9 @@ unsigned long list_lru_count_one(struct list_lru *lru,
+ 		count = 0;
+ 
+ 	return count;
++#else
++	return READ_ONCE(lru->node[nid].lru.nr_items);
++#endif
+ }
+ EXPORT_SYMBOL_GPL(list_lru_count_one);
+ 
 diff --git a/mm/page-writeback.c b/mm/page-writeback.c
-index 4656534b8f5c..15ac9f2049c9 100644
+index ee2fd6a6af40..a12a231b58ab 100644
 --- a/mm/page-writeback.c
 +++ b/mm/page-writeback.c
 @@ -71,7 +71,11 @@ static long ratelimit_pages = 32;
@@ -15002,6 +15391,116 @@ index 4656534b8f5c..15ac9f2049c9 100644
 +#endif
  
  EXPORT_SYMBOL_GPL(dirty_writeback_interval);
+ 
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index 733732e7e0ba..c391b125fd7a 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -205,6 +205,8 @@ EXPORT_SYMBOL(node_states);
+ 
+ gfp_t gfp_allowed_mask __read_mostly = GFP_BOOT_MASK;
+ 
++atomic_long_t kswapd_waiters = ATOMIC_LONG_INIT(0);
++
+ /*
+  * A cached value of the page's pageblock's migratetype, used when the page is
+  * put on a pcplist. Used to avoid the pageblock migratetype lookup when
+@@ -287,7 +289,7 @@ const char * const migratetype_names[MIGRATE_TYPES] = {
+ 
+ int min_free_kbytes = 1024;
+ int user_min_free_kbytes = -1;
+-static int watermark_boost_factor __read_mostly = 15000;
++static int watermark_boost_factor __read_mostly;
+ static int watermark_scale_factor = 10;
+ 
+ /* movable_zone is the "real" zone pages in ZONE_MOVABLE are taken from */
+@@ -2117,16 +2119,17 @@ __rmqueue(struct zone *zone, unsigned int order, int migratetype,
+ }
+ 
+ /*
+- * Obtain a specified number of elements from the buddy allocator, all under
+- * a single hold of the lock, for efficiency.  Add them to the supplied list.
+- * Returns the number of new pages which were placed at *list.
++ * Obtain a specified number of elements from the buddy allocator, and relax the
++ * zone lock when needed. Add them to the supplied list. Returns the number of
++ * new pages which were placed at *list.
+  */
+ static int rmqueue_bulk(struct zone *zone, unsigned int order,
+ 			unsigned long count, struct list_head *list,
+ 			int migratetype, unsigned int alloc_flags)
+ {
++	const bool can_resched = !preempt_count() && !irqs_disabled();
+ 	unsigned long flags;
+-	int i;
++	int i, last_mod = 0;
+ 
+ 	spin_lock_irqsave(&zone->lock, flags);
+ 	for (i = 0; i < count; ++i) {
+@@ -2135,6 +2138,18 @@ static int rmqueue_bulk(struct zone *zone, unsigned int order,
+ 		if (unlikely(page == NULL))
+ 			break;
+ 
++		/* Reschedule and ease the contention on the lock if needed */
++		if (i + 1 < count && ((can_resched && need_resched()) ||
++				      spin_needbreak(&zone->lock))) {
++			__mod_zone_page_state(zone, NR_FREE_PAGES,
++					      -((i + 1 - last_mod) << order));
++			last_mod = i + 1;
++			spin_unlock_irqrestore(&zone->lock, flags);
++			if (can_resched)
++				cond_resched();
++			spin_lock_irqsave(&zone->lock, flags);
++		}
++
+ 		/*
+ 		 * Split buddy pages returned by expand() are received here in
+ 		 * physical page order. The page is added to the tail of
+@@ -2151,7 +2166,7 @@ static int rmqueue_bulk(struct zone *zone, unsigned int order,
+ 					      -(1 << order));
+ 	}
+ 
+-	__mod_zone_page_state(zone, NR_FREE_PAGES, -(i << order));
++	__mod_zone_page_state(zone, NR_FREE_PAGES, -((i - last_mod) << order));
+ 	spin_unlock_irqrestore(&zone->lock, flags);
+ 
+ 	return i;
+@@ -4053,6 +4068,7 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
+ 	unsigned int cpuset_mems_cookie;
+ 	unsigned int zonelist_iter_cookie;
+ 	int reserve_flags;
++	bool woke_kswapd = false;
+ 
+ restart:
+ 	compaction_retries = 0;
+@@ -4092,8 +4108,13 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
+ 			goto nopage;
+ 	}
+ 
+-	if (alloc_flags & ALLOC_KSWAPD)
++	if (alloc_flags & ALLOC_KSWAPD) {
++		if (!woke_kswapd) {
++			atomic_long_inc(&kswapd_waiters);
++			woke_kswapd = true;
++		}
+ 		wake_all_kswapds(order, gfp_mask, ac);
++	}
+ 
+ 	/*
+ 	 * The adjusted alloc_flags might result in immediate success, so try
+@@ -4308,9 +4329,12 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
+ 		goto retry;
+ 	}
+ fail:
+-	warn_alloc(gfp_mask, ac->nodemask,
+-			"page allocation failure: order:%u", order);
+ got_pg:
++	if (woke_kswapd)
++		atomic_long_dec(&kswapd_waiters);
++	if (!page)
++		warn_alloc(gfp_mask, ac->nodemask,
++				"page allocation failure: order:%u", order);
+ 	return page;
+ }
  
 diff --git a/mm/swap.c b/mm/swap.c
 index cd8f0150ba3a..42c405a4f114 100644
@@ -15041,10 +15540,37 @@ index 22c6689d9302..bf65bd9abdf3 100644
  
  /*
 diff --git a/mm/vmscan.c b/mm/vmscan.c
-index dcc264d3c92f..3c951cc77efd 100644
+index 9dd8977de5a2..8d23977c06ca 100644
 --- a/mm/vmscan.c
 +++ b/mm/vmscan.c
-@@ -186,7 +186,11 @@ struct scan_control {
+@@ -133,6 +133,15 @@ struct scan_control {
+ 	/* The file folios on the current node are dangerously low */
+ 	unsigned int file_is_tiny:1;
+ 
++	/* The anonymous pages on the current node are below vm.anon_min_ratio */
++	unsigned int anon_below_min:1;
++
++	/* The clean file pages on the current node are below vm.clean_low_ratio */
++	unsigned int clean_below_low:1;
++
++	/* The clean file pages on the current node are below vm.clean_min_ratio */
++	unsigned int clean_below_min:1;
++
+ 	/* Always discard instead of demoting to lower tier memory */
+ 	unsigned int no_demotion:1;
+ 
+@@ -182,10 +191,22 @@ struct scan_control {
+ #define prefetchw_prev_lru_folio(_folio, _base, _field) do { } while (0)
+ #endif
+ 
++u8 sysctl_anon_min_ratio  __read_mostly = CONFIG_ANON_MIN_RATIO;
++u8 sysctl_clean_low_ratio __read_mostly = CONFIG_CLEAN_LOW_RATIO;
++u8 sysctl_clean_min_ratio __read_mostly = CONFIG_CLEAN_MIN_RATIO;
++static u64 sysctl_anon_min_ratio_kb  __read_mostly = 0;
++static u64 sysctl_clean_low_ratio_kb __read_mostly = 0;
++static u64 sysctl_clean_min_ratio_kb __read_mostly = 0;
++static u64 workingset_protection_prev_totalram __read_mostly = 0;
++
  /*
   * From 0 .. 200.  Higher means more swappy.
   */
@@ -15054,27 +15580,319 @@ index dcc264d3c92f..3c951cc77efd 100644
  int vm_swappiness = 60;
 +#endif
  
- LIST_HEAD(shrinker_list);
- DECLARE_RWSEM(shrinker_rwsem);
-@@ -4595,7 +4599,11 @@ static bool lruvec_is_reclaimable(struct lruvec *lruvec, struct scan_control *sc
+ #ifdef CONFIG_MEMCG
+ 
+@@ -2370,6 +2391,15 @@ static void get_scan_count(struct lruvec *lruvec, struct scan_control *sc,
+ 		goto out;
+ 	}
+ 
++	/*
++	 * Force-scan anon if clean file pages is under vm.clean_low_ratio
++	 * or vm.clean_min_ratio.
++	 */
++	if (sc->clean_below_low || sc->clean_below_min) {
++		scan_balance = SCAN_ANON;
++		goto out;
++	}
++
+ 	/*
+ 	 * If there is enough inactive page cache, we do not reclaim
+ 	 * anything from the anonymous working right now.
+@@ -2514,6 +2544,25 @@ static void get_scan_count(struct lruvec *lruvec, struct scan_control *sc,
+ 			BUG();
+ 		}
+ 
++		/*
++		 * Hard protection of the working set.
++		 */
++		if (file) {
++			/*
++			 * Don't reclaim file pages when the amount of
++			 * clean file pages is below vm.clean_min_ratio.
++			 */
++			if (sc->clean_below_min)
++				scan = 0;
++		} else {
++			/*
++			 * Don't reclaim anonymous pages when their
++			 * amount is below vm.anon_min_ratio.
++			 */
++			if (sc->anon_below_min)
++				scan = 0;
++		}
++
+ 		nr[lru] = scan;
+ 	}
+ }
+@@ -3894,44 +3943,128 @@ static bool lruvec_is_reclaimable(struct lruvec *lruvec, struct scan_control *sc
  }
  
  /* to protect the working set of the last N jiffies */
 +#ifdef CONFIG_CACHY
-+static unsigned long lru_gen_min_ttl __read_mostly = HZ;
++static unsigned long lru_gen_min_ttl __read_mostly = 1000;
 +#else
  static unsigned long lru_gen_min_ttl __read_mostly;
 +#endif
  
- static void lru_gen_age_node(struct pglist_data *pgdat, struct scan_control *sc)
+-static void lru_gen_age_node(struct pglist_data *pgdat, struct scan_control *sc)
+-{
++static void invoke_oom(struct scan_control *sc) {
++	struct oom_control oc = {
++		.gfp_mask = sc->gfp_mask,
++		.order = sc->order,
++	};
++
++	if (mem_cgroup_oom_synchronize(true))
++		return;
++
++	if (!mutex_trylock(&oom_lock))
++		return;
++	out_of_memory(&oc);
++	mutex_unlock(&oom_lock);
++}
++
++static bool lru_gen_node_reclaimable(
++	struct pglist_data *pgdat, struct scan_control *sc) {
+ 	struct mem_cgroup *memcg;
+ 	unsigned long min_ttl = READ_ONCE(lru_gen_min_ttl);
+ 
+ 	VM_WARN_ON_ONCE(!current_is_kswapd());
+ 
+-	/* check the order to exclude compaction-induced reclaim */
+-	if (!min_ttl || sc->order || sc->priority == DEF_PRIORITY)
+-		return;
+-
+ 	memcg = mem_cgroup_iter(NULL, NULL, NULL);
+ 	do {
+ 		struct lruvec *lruvec = mem_cgroup_lruvec(memcg, pgdat);
+ 
+ 		if (lruvec_is_reclaimable(lruvec, sc, min_ttl)) {
+ 			mem_cgroup_iter_break(NULL, memcg);
+-			return;
++			return true;
+ 		}
+ 
+ 		cond_resched();
+ 	} while ((memcg = mem_cgroup_iter(NULL, memcg, NULL)));
+ 
++	return false;
++}
++
++int vm_workingset_protection_update_handler(struct ctl_table *table, int write,
++		void __user *buffer, size_t *lenp, loff_t *ppos)
++{
++	int ret = proc_dou8vec_minmax(table, write, buffer, lenp, ppos);
++	if (ret || !write)
++		return ret;
++
++	workingset_protection_prev_totalram = 0;
++
++	return 0;
++}
++
++static void prepare_workingset_protection(pg_data_t *pgdat, struct scan_control *sc)
++{
++	unsigned long node_mem_total;
++	struct sysinfo i;
++	if (likely(sysctl_anon_min_ratio  ||
++	           sysctl_clean_low_ratio ||
++		       sysctl_clean_min_ratio)) {
++#ifdef CONFIG_NUMA
++		si_meminfo_node(&i, pgdat->node_id);
++#else //CONFIG_NUMA
++		si_meminfo(&i);
++#endif //CONFIG_NUMA
++		node_mem_total = i.totalram;
++
++		if (unlikely(workingset_protection_prev_totalram != node_mem_total)) {
++			sysctl_anon_min_ratio_kb  =
++				node_mem_total * sysctl_anon_min_ratio  / 100;
++			sysctl_clean_low_ratio_kb =
++				node_mem_total * sysctl_clean_low_ratio / 100;
++			sysctl_clean_min_ratio_kb =
++				node_mem_total * sysctl_clean_min_ratio / 100;
++			workingset_protection_prev_totalram = node_mem_total;
++		}
++	}
++
+ 	/*
+-	 * The main goal is to OOM kill if every generation from all memcgs is
+-	 * younger than min_ttl. However, another possibility is all memcgs are
+-	 * either too small or below min.
++	 * Check the number of anonymous pages to protect them from
++	 * reclaiming if their amount is below the specified.
+ 	 */
+-	if (mutex_trylock(&oom_lock)) {
+-		struct oom_control oc = {
+-			.gfp_mask = sc->gfp_mask,
+-		};
++	if (sysctl_anon_min_ratio) {
++		unsigned long reclaimable_anon;
++
++		reclaimable_anon =
++			node_page_state(pgdat, NR_ACTIVE_ANON) +
++			node_page_state(pgdat, NR_INACTIVE_ANON) +
++			node_page_state(pgdat, NR_ISOLATED_ANON);
++
++		sc->anon_below_min = reclaimable_anon < sysctl_anon_min_ratio_kb;
++	} else
++		sc->anon_below_min = 0;
+ 
+-		out_of_memory(&oc);
++	/*
++	 * Check the number of clean file pages to protect them from
++	 * reclaiming if their amount is below the specified.
++	 */
++	if (sysctl_clean_low_ratio || sysctl_clean_min_ratio) {
++		unsigned long reclaimable_file, dirty, clean;
++
++		reclaimable_file =
++			node_page_state(pgdat, NR_ACTIVE_FILE) +
++			node_page_state(pgdat, NR_INACTIVE_FILE) +
++			node_page_state(pgdat, NR_ISOLATED_FILE);
++		dirty = node_page_state(pgdat, NR_FILE_DIRTY);
++		/*
++		 * node_page_state() sum can go out of sync since
++		 * all the values are not read at once.
++		 */
++		if (likely(reclaimable_file > dirty))
++			clean = reclaimable_file - dirty;
++		else
++			clean = 0;
+ 
+-		mutex_unlock(&oom_lock);
++		sc->clean_below_low = clean < sysctl_clean_low_ratio_kb;
++		sc->clean_below_min = clean < sysctl_clean_min_ratio_kb;
++	} else {
++		sc->clean_below_low = 0;
++		sc->clean_below_min = 0;
+ 	}
+ }
+ 
+@@ -4928,6 +5061,9 @@ static void lru_gen_shrink_node(struct pglist_data *pgdat, struct scan_control *
+ 	clear_mm_walk();
+ 
+ 	blk_finish_plug(&plug);
++
++	if (sc->nr_reclaimed == reclaimed && !lru_gen_node_reclaimable(pgdat, sc))
++		invoke_oom(sc);
+ done:
+ 	/* kswapd should never fail */
+ 	pgdat->kswapd_failures = 0;
+@@ -5593,10 +5729,6 @@ late_initcall(init_lru_gen);
+ 
+ #else /* !CONFIG_LRU_GEN */
+ 
+-static void lru_gen_age_node(struct pglist_data *pgdat, struct scan_control *sc)
+-{
+-}
+-
+ static void lru_gen_shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
  {
+ }
+@@ -5874,6 +6006,8 @@ static void shrink_node(pg_data_t *pgdat, struct scan_control *sc)
+ 
+ 	prepare_scan_control(pgdat, sc);
+ 
++	prepare_workingset_protection(pgdat, sc);
++
+ 	shrink_node_memcgs(pgdat, sc);
+ 
+ 	flush_reclaim_state(sc);
+@@ -5962,6 +6096,10 @@ static void shrink_node(pg_data_t *pgdat, struct scan_control *sc)
+ 	 */
+ 	if (reclaimable)
+ 		pgdat->kswapd_failures = 0;
++
++	if (sc->clean_below_min && pgdat->kswapd_failures && !sc->priority) {
++		invoke_oom(sc);
++	}
+ }
+ 
+ /*
+@@ -6246,7 +6384,7 @@ static unsigned long do_try_to_free_pages(struct zonelist *zonelist,
+ 	return 0;
+ }
+ 
+-static bool allow_direct_reclaim(pg_data_t *pgdat)
++static bool allow_direct_reclaim(pg_data_t *pgdat, bool using_kswapd)
+ {
+ 	struct zone *zone;
+ 	unsigned long pfmemalloc_reserve = 0;
+@@ -6275,6 +6413,10 @@ static bool allow_direct_reclaim(pg_data_t *pgdat)
+ 
+ 	wmark_ok = free_pages > pfmemalloc_reserve / 2;
+ 
++	/* The throttled direct reclaimer is now a kswapd waiter */
++	if (unlikely(!using_kswapd && !wmark_ok))
++		atomic_long_inc(&kswapd_waiters);
++
+ 	/* kswapd must be awake if processes are being throttled */
+ 	if (!wmark_ok && waitqueue_active(&pgdat->kswapd_wait)) {
+ 		if (READ_ONCE(pgdat->kswapd_highest_zoneidx) > ZONE_NORMAL)
+@@ -6340,7 +6482,7 @@ static bool throttle_direct_reclaim(gfp_t gfp_mask, struct zonelist *zonelist,
+ 
+ 		/* Throttle based on the first usable node */
+ 		pgdat = zone->zone_pgdat;
+-		if (allow_direct_reclaim(pgdat))
++		if (allow_direct_reclaim(pgdat, gfp_mask & __GFP_KSWAPD_RECLAIM))
+ 			goto out;
+ 		break;
+ 	}
+@@ -6362,11 +6504,14 @@ static bool throttle_direct_reclaim(gfp_t gfp_mask, struct zonelist *zonelist,
+ 	 */
+ 	if (!(gfp_mask & __GFP_FS))
+ 		wait_event_interruptible_timeout(pgdat->pfmemalloc_wait,
+-			allow_direct_reclaim(pgdat), HZ);
++			allow_direct_reclaim(pgdat, true), HZ);
+ 	else
+ 		/* Throttle until kswapd wakes the process */
+ 		wait_event_killable(zone->zone_pgdat->pfmemalloc_wait,
+-			allow_direct_reclaim(pgdat));
++			allow_direct_reclaim(pgdat, true));
++
++	if (unlikely(!(gfp_mask & __GFP_KSWAPD_RECLAIM)))
++		atomic_long_dec(&kswapd_waiters);
+ 
+ 	if (fatal_signal_pending(current))
+ 		return true;
+@@ -6505,10 +6650,8 @@ static void kswapd_age_node(struct pglist_data *pgdat, struct scan_control *sc)
+ 	struct mem_cgroup *memcg;
+ 	struct lruvec *lruvec;
+ 
+-	if (lru_gen_enabled()) {
+-		lru_gen_age_node(pgdat, sc);
++	if (lru_gen_enabled())
+ 		return;
+-	}
+ 
+ 	if (!can_age_anon_pages(pgdat, sc))
+ 		return;
+@@ -6864,14 +7007,15 @@ static int balance_pgdat(pg_data_t *pgdat, int order, int highest_zoneidx)
+ 		 * able to safely make forward progress. Wake them
+ 		 */
+ 		if (waitqueue_active(&pgdat->pfmemalloc_wait) &&
+-				allow_direct_reclaim(pgdat))
++				allow_direct_reclaim(pgdat, true))
+ 			wake_up_all(&pgdat->pfmemalloc_wait);
+ 
+ 		/* Check if kswapd should be suspending */
+ 		__fs_reclaim_release(_THIS_IP_);
+ 		ret = try_to_freeze();
+ 		__fs_reclaim_acquire(_THIS_IP_);
+-		if (ret || kthread_should_stop())
++		if (ret || kthread_should_stop() ||
++		    !atomic_long_read(&kswapd_waiters))
+ 			break;
+ 
+ 		/*
 -- 
 2.43.0
 
-From 7e14d50e82072f74217b92f87bb3353ac69347fc Mon Sep 17 00:00:00 2001
+From de0d10170bdbf56af00a917aa60d1d0caf14e080 Mon Sep 17 00:00:00 2001
 From: Peter Jung <admin@ptr1337.dev>
-Date: Sat, 16 Dec 2023 09:03:04 +0100
-Subject: [PATCH 5/7] fixes
+Date: Fri, 22 Dec 2023 17:53:28 +0100
+Subject: [PATCH 5/8] fixes
 
 Signed-off-by: Peter Jung <admin@ptr1337.dev>
 ---
@@ -15089,12 +15907,13 @@ Signed-off-by: Peter Jung <admin@ptr1337.dev>
  drivers/leds/trigger/Kconfig                  |    9 +
  drivers/leds/trigger/Makefile                 |    1 +
  drivers/leds/trigger/ledtrig-blkdev.c         | 1218 +++++++++++++++++
+ include/linux/nodemask.h                      |  120 +-
  include/linux/pageblock-flags.h               |    2 +-
  kernel/padata.c                               |    4 +-
  kernel/smp.c                                  |    2 +-
  mm/page_alloc.c                               |    2 +-
- mm/slub.c                                     |   17 +-
- 16 files changed, 1513 insertions(+), 34 deletions(-)
+ mm/readahead.c                                |   10 +-
+ 17 files changed, 1603 insertions(+), 57 deletions(-)
  create mode 100644 Documentation/ABI/testing/sysfs-class-led-trigger-blkdev
  create mode 100644 Documentation/leds/ledtrig-blkdev.rst
  create mode 100644 drivers/leds/trigger/ledtrig-blkdev.c
@@ -15408,10 +16227,10 @@ index 35389b2af88e..0216f63a366b 100644
 -
  #endif /* _ASM_X86_BARRIER_H */
 diff --git a/arch/x86/include/asm/processor.h b/arch/x86/include/asm/processor.h
-index a3669a7774ed..3e175d55488d 100644
+index ae81a7191c1c..7418894059d9 100644
 --- a/arch/x86/include/asm/processor.h
 +++ b/arch/x86/include/asm/processor.h
-@@ -734,4 +734,23 @@ bool arch_is_platform_page(u64 paddr);
+@@ -749,4 +749,23 @@ enum mds_mitigations {
  
  extern bool gds_ucode_mitigated(void);
  
@@ -15436,10 +16255,10 @@ index a3669a7774ed..3e175d55488d 100644
 +
  #endif /* _ASM_X86_PROCESSOR_H */
 diff --git a/drivers/bluetooth/btusb.c b/drivers/bluetooth/btusb.c
-index 66080fae072f..7778883d3381 100644
+index b8e9de887b5d..8cce2c75ecba 100644
 --- a/drivers/bluetooth/btusb.c
 +++ b/drivers/bluetooth/btusb.c
-@@ -1032,7 +1032,7 @@ static void btusb_qca_cmd_timeout(struct hci_dev *hdev)
+@@ -1036,7 +1036,7 @@ static void btusb_qca_cmd_timeout(struct hci_dev *hdev)
  		}
  
  		gpiod_set_value_cansleep(reset_gpio, 0);
@@ -15473,10 +16292,10 @@ index bdb578e0899f..0f1d6778051f 100644
  		if (cli_data->hid_sensor_hubs[i] == hid) {
  			struct request_list *new = kzalloc(sizeof(*new), GFP_KERNEL);
 diff --git a/drivers/leds/trigger/Kconfig b/drivers/leds/trigger/Kconfig
-index 2a57328eca20..05e80cfd0ed8 100644
+index d11d80176fc0..5690ce91a87c 100644
 --- a/drivers/leds/trigger/Kconfig
 +++ b/drivers/leds/trigger/Kconfig
-@@ -155,4 +155,13 @@ config LEDS_TRIGGER_TTY
+@@ -152,4 +152,13 @@ config LEDS_TRIGGER_TTY
  
  	  When build as a module this driver will be called ledtrig-tty.
  
@@ -16723,6 +17542,338 @@ index 000000000000..9e0c4b66ea27
 +MODULE_DESCRIPTION("Block device LED trigger");
 +MODULE_AUTHOR("Ian Pilcher <arequipeno@gmail.com>");
 +MODULE_LICENSE("GPL v2");
+diff --git a/include/linux/nodemask.h b/include/linux/nodemask.h
+index 8d07116caaf1..72a8d967d5fa 100644
+--- a/include/linux/nodemask.h
++++ b/include/linux/nodemask.h
+@@ -99,6 +99,47 @@
+ typedef struct { DECLARE_BITMAP(bits, MAX_NUMNODES); } nodemask_t;
+ extern nodemask_t _unused_nodemask_arg_;
+ 
++#if MAX_NUMNODES > 1
++extern unsigned int nr_node_ids;
++#else
++#define nr_node_ids		1U
++#endif
++
++/*
++ * We have several different "preferred sizes" for the nodemask operations,
++ * depending on operation.
++ *
++ * For example, the bitmap scanning and operating operations have optimized
++ * routines that work for the single-word case, but only when the size is
++ * constant. So if MAX_NUMNODES fits in one single word, we are better off
++ * using that small constant, in order to trigger the optimized bit finding.
++ * That is 'small_nodemask_size'.
++ *
++ * The clearing and copying operations will similarly perform better with a
++ * constant size, but we limit that size arbitrarily to four words. We call
++ * this 'large_nodemask_size'.
++ *
++ * Finally, some operations just want the exact limit, either because they set
++ * bits or just don't have any faster fixed-sized versions. We call this just
++ * 'nr_node_ids'.
++ *
++ * Note that these optional constants are always guaranteed to be at least as
++ * big as 'nr_node_ids' itself is, and all our nodemask allocations are at
++ * least that size. The optimization comes from being able to potentially use
++ * a compile-time constant instead of a run-time generated exact number of
++ * nodes.
++ */
++#if MAX_NUMNODES <= BITS_PER_LONG
++  #define small_nodemask_bits ((unsigned int)MAX_NUMNODES)
++  #define large_nodemask_bits ((unsigned int)MAX_NUMNODES)
++#elif MAX_NUMNODES <= 4*BITS_PER_LONG
++  #define small_nodemask_bits nr_node_ids
++  #define large_nodemask_bits ((unsigned int)MAX_NUMNODES)
++#else
++  #define small_nodemask_bits nr_node_ids
++  #define large_nodemask_bits nr_node_ids
++#endif
++
+ /**
+  * nodemask_pr_args - printf args to output a nodemask
+  * @maskp: nodemask to be printed
+@@ -109,7 +150,7 @@ extern nodemask_t _unused_nodemask_arg_;
+ 				__nodemask_pr_bits(maskp)
+ static inline unsigned int __nodemask_pr_numnodes(const nodemask_t *m)
+ {
+-	return m ? MAX_NUMNODES : 0;
++	return m ? nr_node_ids : 0;
+ }
+ static inline const unsigned long *__nodemask_pr_bits(const nodemask_t *m)
+ {
+@@ -137,13 +178,13 @@ static inline void __node_clear(int node, volatile nodemask_t *dstp)
+ 	clear_bit(node, dstp->bits);
+ }
+ 
+-#define nodes_setall(dst) __nodes_setall(&(dst), MAX_NUMNODES)
++#define nodes_setall(dst) __nodes_setall(&(dst), large_nodemask_bits)
+ static inline void __nodes_setall(nodemask_t *dstp, unsigned int nbits)
+ {
+ 	bitmap_fill(dstp->bits, nbits);
+ }
+ 
+-#define nodes_clear(dst) __nodes_clear(&(dst), MAX_NUMNODES)
++#define nodes_clear(dst) __nodes_clear(&(dst), large_nodemask_bits)
+ static inline void __nodes_clear(nodemask_t *dstp, unsigned int nbits)
+ {
+ 	bitmap_zero(dstp->bits, nbits);
+@@ -160,7 +201,7 @@ static inline bool __node_test_and_set(int node, nodemask_t *addr)
+ }
+ 
+ #define nodes_and(dst, src1, src2) \
+-			__nodes_and(&(dst), &(src1), &(src2), MAX_NUMNODES)
++			__nodes_and(&(dst), &(src1), &(src2), small_nodemask_bits)
+ static inline void __nodes_and(nodemask_t *dstp, const nodemask_t *src1p,
+ 					const nodemask_t *src2p, unsigned int nbits)
+ {
+@@ -168,7 +209,7 @@ static inline void __nodes_and(nodemask_t *dstp, const nodemask_t *src1p,
+ }
+ 
+ #define nodes_or(dst, src1, src2) \
+-			__nodes_or(&(dst), &(src1), &(src2), MAX_NUMNODES)
++			__nodes_or(&(dst), &(src1), &(src2), small_nodemask_bits)
+ static inline void __nodes_or(nodemask_t *dstp, const nodemask_t *src1p,
+ 					const nodemask_t *src2p, unsigned int nbits)
+ {
+@@ -176,7 +217,7 @@ static inline void __nodes_or(nodemask_t *dstp, const nodemask_t *src1p,
+ }
+ 
+ #define nodes_xor(dst, src1, src2) \
+-			__nodes_xor(&(dst), &(src1), &(src2), MAX_NUMNODES)
++			__nodes_xor(&(dst), &(src1), &(src2), small_nodemask_bits)
+ static inline void __nodes_xor(nodemask_t *dstp, const nodemask_t *src1p,
+ 					const nodemask_t *src2p, unsigned int nbits)
+ {
+@@ -184,7 +225,7 @@ static inline void __nodes_xor(nodemask_t *dstp, const nodemask_t *src1p,
+ }
+ 
+ #define nodes_andnot(dst, src1, src2) \
+-			__nodes_andnot(&(dst), &(src1), &(src2), MAX_NUMNODES)
++			__nodes_andnot(&(dst), &(src1), &(src2), small_nodemask_bits)
+ static inline void __nodes_andnot(nodemask_t *dstp, const nodemask_t *src1p,
+ 					const nodemask_t *src2p, unsigned int nbits)
+ {
+@@ -192,7 +233,7 @@ static inline void __nodes_andnot(nodemask_t *dstp, const nodemask_t *src1p,
+ }
+ 
+ #define nodes_complement(dst, src) \
+-			__nodes_complement(&(dst), &(src), MAX_NUMNODES)
++			__nodes_complement(&(dst), &(src), small_nodemask_bits)
+ static inline void __nodes_complement(nodemask_t *dstp,
+ 					const nodemask_t *srcp, unsigned int nbits)
+ {
+@@ -200,7 +241,7 @@ static inline void __nodes_complement(nodemask_t *dstp,
+ }
+ 
+ #define nodes_equal(src1, src2) \
+-			__nodes_equal(&(src1), &(src2), MAX_NUMNODES)
++			__nodes_equal(&(src1), &(src2), small_nodemask_bits)
+ static inline bool __nodes_equal(const nodemask_t *src1p,
+ 					const nodemask_t *src2p, unsigned int nbits)
+ {
+@@ -208,7 +249,7 @@ static inline bool __nodes_equal(const nodemask_t *src1p,
+ }
+ 
+ #define nodes_intersects(src1, src2) \
+-			__nodes_intersects(&(src1), &(src2), MAX_NUMNODES)
++			__nodes_intersects(&(src1), &(src2), small_nodemask_bits)
+ static inline bool __nodes_intersects(const nodemask_t *src1p,
+ 					const nodemask_t *src2p, unsigned int nbits)
+ {
+@@ -216,33 +257,33 @@ static inline bool __nodes_intersects(const nodemask_t *src1p,
+ }
+ 
+ #define nodes_subset(src1, src2) \
+-			__nodes_subset(&(src1), &(src2), MAX_NUMNODES)
++			__nodes_subset(&(src1), &(src2), small_nodemask_bits)
+ static inline bool __nodes_subset(const nodemask_t *src1p,
+ 					const nodemask_t *src2p, unsigned int nbits)
+ {
+ 	return bitmap_subset(src1p->bits, src2p->bits, nbits);
+ }
+ 
+-#define nodes_empty(src) __nodes_empty(&(src), MAX_NUMNODES)
++#define nodes_empty(src) __nodes_empty(&(src), small_nodemask_bits)
+ static inline bool __nodes_empty(const nodemask_t *srcp, unsigned int nbits)
+ {
+ 	return bitmap_empty(srcp->bits, nbits);
+ }
+ 
+-#define nodes_full(nodemask) __nodes_full(&(nodemask), MAX_NUMNODES)
++#define nodes_full(nodemask) __nodes_full(&(nodemask), small_nodemask_bits)
+ static inline bool __nodes_full(const nodemask_t *srcp, unsigned int nbits)
+ {
+ 	return bitmap_full(srcp->bits, nbits);
+ }
+ 
+-#define nodes_weight(nodemask) __nodes_weight(&(nodemask), MAX_NUMNODES)
++#define nodes_weight(nodemask) __nodes_weight(&(nodemask), small_nodemask_bits)
+ static inline int __nodes_weight(const nodemask_t *srcp, unsigned int nbits)
+ {
+ 	return bitmap_weight(srcp->bits, nbits);
+ }
+ 
+ #define nodes_shift_right(dst, src, n) \
+-			__nodes_shift_right(&(dst), &(src), (n), MAX_NUMNODES)
++			__nodes_shift_right(&(dst), &(src), (n), small_nodemask_bits)
+ static inline void __nodes_shift_right(nodemask_t *dstp,
+ 					const nodemask_t *srcp, int n, int nbits)
+ {
+@@ -250,26 +291,38 @@ static inline void __nodes_shift_right(nodemask_t *dstp,
+ }
+ 
+ #define nodes_shift_left(dst, src, n) \
+-			__nodes_shift_left(&(dst), &(src), (n), MAX_NUMNODES)
++			__nodes_shift_left(&(dst), &(src), (n), small_nodemask_bits)
+ static inline void __nodes_shift_left(nodemask_t *dstp,
+ 					const nodemask_t *srcp, int n, int nbits)
+ {
+ 	bitmap_shift_left(dstp->bits, srcp->bits, n, nbits);
+ }
+ 
+-/* FIXME: better would be to fix all architectures to never return
+-          > MAX_NUMNODES, then the silly min_ts could be dropped. */
++/*
++ * FIXME: audit tree to move end-of-nodemask to >= nr_node_ids;
++ *        for now, map it to >= MAX_NUMNODES.
++ */
+ 
+ #define first_node(src) __first_node(&(src))
+ static inline unsigned int __first_node(const nodemask_t *srcp)
+ {
+-	return min_t(unsigned int, MAX_NUMNODES, find_first_bit(srcp->bits, MAX_NUMNODES));
++	unsigned int bit = find_first_bit(srcp->bits, small_nodemask_bits);
++
++	if (bit >= nr_node_ids)
++		bit = MAX_NUMNODES;
++
++	return bit;
+ }
+ 
+ #define next_node(n, src) __next_node((n), &(src))
+ static inline unsigned int __next_node(int n, const nodemask_t *srcp)
+ {
+-	return min_t(unsigned int, MAX_NUMNODES, find_next_bit(srcp->bits, MAX_NUMNODES, n+1));
++	unsigned int bit = find_next_bit(srcp->bits, small_nodemask_bits, n+1);
++
++	if (bit >= nr_node_ids)
++		bit = MAX_NUMNODES;
++
++	return bit;
+ }
+ 
+ /*
+@@ -283,6 +336,7 @@ static inline unsigned int __next_node_in(int node, const nodemask_t *srcp)
+ 
+ 	if (ret == MAX_NUMNODES)
+ 		ret = __first_node(srcp);
++
+ 	return ret;
+ }
+ 
+@@ -306,8 +360,12 @@ static inline void init_nodemask_of_node(nodemask_t *mask, int node)
+ #define first_unset_node(mask) __first_unset_node(&(mask))
+ static inline unsigned int __first_unset_node(const nodemask_t *maskp)
+ {
+-	return min_t(unsigned int, MAX_NUMNODES,
+-			find_first_zero_bit(maskp->bits, MAX_NUMNODES));
++	unsigned int bit = find_first_zero_bit(maskp->bits, small_nodemask_bits);
++
++	if (bit >= nr_node_ids)
++		bit = MAX_NUMNODES;
++
++	return bit;
+ }
+ 
+ #define NODE_MASK_LAST_WORD BITMAP_LAST_WORD_MASK(MAX_NUMNODES)
+@@ -337,21 +395,21 @@ static inline unsigned int __first_unset_node(const nodemask_t *maskp)
+ #define nodes_addr(src) ((src).bits)
+ 
+ #define nodemask_parse_user(ubuf, ulen, dst) \
+-		__nodemask_parse_user((ubuf), (ulen), &(dst), MAX_NUMNODES)
++		__nodemask_parse_user((ubuf), (ulen), &(dst), nr_node_ids)
+ static inline int __nodemask_parse_user(const char __user *buf, int len,
+ 					nodemask_t *dstp, int nbits)
+ {
+ 	return bitmap_parse_user(buf, len, dstp->bits, nbits);
+ }
+ 
+-#define nodelist_parse(buf, dst) __nodelist_parse((buf), &(dst), MAX_NUMNODES)
++#define nodelist_parse(buf, dst) __nodelist_parse((buf), &(dst), nr_node_ids)
+ static inline int __nodelist_parse(const char *buf, nodemask_t *dstp, int nbits)
+ {
+ 	return bitmap_parselist(buf, dstp->bits, nbits);
+ }
+ 
+ #define node_remap(oldbit, old, new) \
+-		__node_remap((oldbit), &(old), &(new), MAX_NUMNODES)
++		__node_remap((oldbit), &(old), &(new), nr_node_ids)
+ static inline int __node_remap(int oldbit,
+ 		const nodemask_t *oldp, const nodemask_t *newp, int nbits)
+ {
+@@ -359,7 +417,7 @@ static inline int __node_remap(int oldbit,
+ }
+ 
+ #define nodes_remap(dst, src, old, new) \
+-		__nodes_remap(&(dst), &(src), &(old), &(new), MAX_NUMNODES)
++		__nodes_remap(&(dst), &(src), &(old), &(new), nr_node_ids)
+ static inline void __nodes_remap(nodemask_t *dstp, const nodemask_t *srcp,
+ 		const nodemask_t *oldp, const nodemask_t *newp, int nbits)
+ {
+@@ -367,7 +425,7 @@ static inline void __nodes_remap(nodemask_t *dstp, const nodemask_t *srcp,
+ }
+ 
+ #define nodes_onto(dst, orig, relmap) \
+-		__nodes_onto(&(dst), &(orig), &(relmap), MAX_NUMNODES)
++		__nodes_onto(&(dst), &(orig), &(relmap), nr_node_ids)
+ static inline void __nodes_onto(nodemask_t *dstp, const nodemask_t *origp,
+ 		const nodemask_t *relmapp, int nbits)
+ {
+@@ -375,7 +433,7 @@ static inline void __nodes_onto(nodemask_t *dstp, const nodemask_t *origp,
+ }
+ 
+ #define nodes_fold(dst, orig, sz) \
+-		__nodes_fold(&(dst), &(orig), sz, MAX_NUMNODES)
++		__nodes_fold(&(dst), &(orig), sz, nr_node_ids)
+ static inline void __nodes_fold(nodemask_t *dstp, const nodemask_t *origp,
+ 		int sz, int nbits)
+ {
+@@ -385,7 +443,7 @@ static inline void __nodes_fold(nodemask_t *dstp, const nodemask_t *origp,
+ #if MAX_NUMNODES > 1
+ #define for_each_node_mask(node, mask)				    \
+ 	for ((node) = first_node(mask);				    \
+-	     (node) < MAX_NUMNODES;				    \
++	     (node) < nr_node_ids;				    \
+ 	     (node) = next_node((node), (mask)))
+ #else /* MAX_NUMNODES == 1 */
+ #define for_each_node_mask(node, mask)                                  \
+@@ -452,7 +510,6 @@ static inline unsigned int next_memory_node(int nid)
+ 	return next_node(nid, node_states[N_MEMORY]);
+ }
+ 
+-extern unsigned int nr_node_ids;
+ extern unsigned int nr_online_nodes;
+ 
+ static inline void node_set_online(int nid)
+@@ -494,7 +551,6 @@ static inline int num_node_state(enum node_states state)
+ #define first_memory_node	0
+ #define next_online_node(nid)	(MAX_NUMNODES)
+ #define next_memory_node(nid)	(MAX_NUMNODES)
+-#define nr_node_ids		1U
+ #define nr_online_nodes		1U
+ 
+ #define node_set_online(node)	   node_set_state((node), N_ONLINE)
+@@ -516,7 +572,7 @@ static inline int node_random(const nodemask_t *maskp)
+ 		bit = first_node(*maskp);
+ 		break;
+ 	default:
+-		bit = find_nth_bit(maskp->bits, MAX_NUMNODES, get_random_u32_below(w));
++		bit = find_nth_bit(maskp->bits, nr_node_ids, get_random_u32_below(w));
+ 		break;
+ 	}
+ 	return bit;
 diff --git a/include/linux/pageblock-flags.h b/include/linux/pageblock-flags.h
 index e83c4c095041..21b8dfa5d828 100644
 --- a/include/linux/pageblock-flags.h
@@ -16759,7 +17910,7 @@ index 179fb1518070..b6bb0c45d7b8 100644
  	struct padata_work *pw = container_of(w, struct padata_work, pw_work);
  	struct padata_mt_job_state *ps = pw->pw_data;
 diff --git a/kernel/smp.c b/kernel/smp.c
-index 695eb13a276d..83b0468808f9 100644
+index f085ebcdf9e7..80ba1a8535c9 100644
 --- a/kernel/smp.c
 +++ b/kernel/smp.c
 @@ -957,7 +957,7 @@ early_param("maxcpus", maxcpus);
@@ -16772,10 +17923,10 @@ index 695eb13a276d..83b0468808f9 100644
  #endif
  
 diff --git a/mm/page_alloc.c b/mm/page_alloc.c
-index 85741403948f..313338789e46 100644
+index c391b125fd7a..cdff7bc85846 100644
 --- a/mm/page_alloc.c
 +++ b/mm/page_alloc.c
-@@ -294,7 +294,7 @@ int movable_zone;
+@@ -297,7 +297,7 @@ int movable_zone;
  EXPORT_SYMBOL(movable_zone);
  
  #if MAX_NUMNODES > 1
@@ -16784,64 +17935,36 @@ index 85741403948f..313338789e46 100644
  unsigned int nr_online_nodes __read_mostly = 1;
  EXPORT_SYMBOL(nr_node_ids);
  EXPORT_SYMBOL(nr_online_nodes);
-diff --git a/mm/slub.c b/mm/slub.c
-index f7940048138c..3cf4842d534e 100644
---- a/mm/slub.c
-+++ b/mm/slub.c
-@@ -287,6 +287,7 @@ static inline bool kmem_cache_has_cpu_partial(struct kmem_cache *s)
- #define OO_SHIFT	16
- #define OO_MASK		((1 << OO_SHIFT) - 1)
- #define MAX_OBJS_PER_PAGE	32767 /* since slab.objects is u15 */
-+#define SLUB_PAGE_FRAC_SHIFT 12
+diff --git a/mm/readahead.c b/mm/readahead.c
+index 6925e6959fd3..1c1d26ad0ba5 100644
+--- a/mm/readahead.c
++++ b/mm/readahead.c
+@@ -600,9 +600,17 @@ static void ondemand_readahead(struct readahead_control *ractl,
+ 				max_pages);
+ 		rcu_read_unlock();
  
- /* Internal SLUB flags */
- /* Poison object */
-@@ -4140,6 +4141,7 @@ static inline int calculate_order(unsigned int size)
- 	unsigned int min_objects;
- 	unsigned int max_objects;
- 	unsigned int nr_cpus;
-+	unsigned int page_size_frac;
+-		if (!start || start - index > max_pages)
++		if (!start || start - index - 1 > max_pages)
+ 			return;
  
- 	/*
- 	 * Attempt to find best configuration for a slab. This
-@@ -4168,10 +4170,13 @@ static inline int calculate_order(unsigned int size)
- 	max_objects = order_objects(slub_max_order, size);
- 	min_objects = min(min_objects, max_objects);
- 
--	while (min_objects > 1) {
-+	page_size_frac = ((PAGE_SIZE >> SLUB_PAGE_FRAC_SHIFT) == 1) ? 0
-+		: PAGE_SIZE >> SLUB_PAGE_FRAC_SHIFT;
++		/*
++		 * If no gaps in the range, page_cache_next_miss() returns
++		 * index beyond range. Adjust it back to make sure
++		 * ractl->_index is updated correctly later.
++		 */
++		if ((start - index - 1) == max_pages)
++			start--;
 +
-+	while (min_objects >= 1) {
- 		unsigned int fraction;
- 
--		fraction = 16;
-+		fraction = 16 + page_size_frac;
- 		while (fraction >= 4) {
- 			order = calc_slab_order(size, min_objects,
- 					slub_max_order, fraction);
-@@ -4182,14 +4187,6 @@ static inline int calculate_order(unsigned int size)
- 		min_objects--;
- 	}
- 
--	/*
--	 * We were unable to place multiple objects in a slab. Now
--	 * lets see if we can place a single object there.
--	 */
--	order = calc_slab_order(size, 1, slub_max_order, 1);
--	if (order <= slub_max_order)
--		return order;
--
- 	/*
- 	 * Doh this slab cannot be placed using slub_max_order.
- 	 */
+ 		ra->start = start;
+ 		ra->size = start - index;	/* old async_size */
+ 		ra->size += req_size;
 -- 
 2.43.0
 
-From d3fd9f39c5ca1b1e6b704a266b54dbb486217672 Mon Sep 17 00:00:00 2001
+From 168f13d9eb86912dec7fec27f832d0e94c3cd8fb Mon Sep 17 00:00:00 2001
 From: Peter Jung <admin@ptr1337.dev>
-Date: Wed, 29 Nov 2023 19:56:24 +0100
-Subject: [PATCH 6/7] ksm
+Date: Fri, 22 Dec 2023 17:55:00 +0100
+Subject: [PATCH 6/8] ksm
 
 Signed-off-by: Peter Jung <admin@ptr1337.dev>
 ---
@@ -16849,7 +17972,6 @@ Signed-off-by: Peter Jung <admin@ptr1337.dev>
  arch/arm/tools/syscall.tbl                  |   3 +
  arch/arm64/include/asm/unistd.h             |   2 +-
  arch/arm64/include/asm/unistd32.h           |   6 +
- arch/ia64/kernel/syscalls/syscall.tbl       |   3 +
  arch/m68k/kernel/syscalls/syscall.tbl       |   3 +
  arch/microblaze/kernel/syscalls/syscall.tbl |   3 +
  arch/mips/kernel/syscalls/syscall_n32.tbl   |   3 +
@@ -16867,222 +17989,211 @@ Signed-off-by: Peter Jung <admin@ptr1337.dev>
  include/uapi/asm-generic/unistd.h           |  11 +-
  kernel/sys.c                                | 147 ++++++++++++++++++++
  kernel/sys_ni.c                             |   3 +
- 22 files changed, 218 insertions(+), 2 deletions(-)
+ 21 files changed, 215 insertions(+), 2 deletions(-)
 
 diff --git a/arch/alpha/kernel/syscalls/syscall.tbl b/arch/alpha/kernel/syscalls/syscall.tbl
-index ad37569d0507..9f4311e21c42 100644
+index 18c842ca6c32..f316faf97fec 100644
 --- a/arch/alpha/kernel/syscalls/syscall.tbl
 +++ b/arch/alpha/kernel/syscalls/syscall.tbl
-@@ -492,3 +492,6 @@
- 560	common	set_mempolicy_home_node		sys_ni_syscall
- 561	common	cachestat			sys_cachestat
- 562	common	fchmodat2			sys_fchmodat2
-+563	common	process_ksm_enable		sys_process_ksm_enable
-+564	common	process_ksm_disable		sys_process_ksm_disable
-+565	common	process_ksm_status		sys_process_ksm_status
+@@ -496,3 +496,6 @@
+ 564	common	futex_wake			sys_futex_wake
+ 565	common	futex_wait			sys_futex_wait
+ 566	common	futex_requeue			sys_futex_requeue
++567	common	process_ksm_enable		sys_process_ksm_enable
++568	common	process_ksm_disable		sys_process_ksm_disable
++569	common	process_ksm_status		sys_process_ksm_status
 diff --git a/arch/arm/tools/syscall.tbl b/arch/arm/tools/syscall.tbl
-index c572d6c3dee0..8d40b3a4572e 100644
+index 584f9528c996..f443c74750e7 100644
 --- a/arch/arm/tools/syscall.tbl
 +++ b/arch/arm/tools/syscall.tbl
-@@ -466,3 +466,6 @@
- 450	common	set_mempolicy_home_node		sys_set_mempolicy_home_node
- 451	common	cachestat			sys_cachestat
- 452	common	fchmodat2			sys_fchmodat2
-+453	common	process_ksm_enable		sys_process_ksm_enable
-+454	common	process_ksm_disable		sys_process_ksm_disable
-+455	common	process_ksm_status		sys_process_ksm_status
+@@ -470,3 +470,6 @@
+ 454	common	futex_wake			sys_futex_wake
+ 455	common	futex_wait			sys_futex_wait
+ 456	common	futex_requeue			sys_futex_requeue
++457	common	process_ksm_enable		sys_process_ksm_enable
++458	common	process_ksm_disable		sys_process_ksm_disable
++459	common	process_ksm_status		sys_process_ksm_status
 diff --git a/arch/arm64/include/asm/unistd.h b/arch/arm64/include/asm/unistd.h
-index bd77253b62e0..f33190f17ebb 100644
+index 531effca5f1f..abe10a833fcd 100644
 --- a/arch/arm64/include/asm/unistd.h
 +++ b/arch/arm64/include/asm/unistd.h
 @@ -39,7 +39,7 @@
  #define __ARM_NR_compat_set_tls		(__ARM_NR_COMPAT_BASE + 5)
  #define __ARM_NR_COMPAT_END		(__ARM_NR_COMPAT_BASE + 0x800)
  
--#define __NR_compat_syscalls		453
-+#define __NR_compat_syscalls		456
+-#define __NR_compat_syscalls		457
++#define __NR_compat_syscalls		460
  #endif
  
  #define __ARCH_WANT_SYS_CLONE
 diff --git a/arch/arm64/include/asm/unistd32.h b/arch/arm64/include/asm/unistd32.h
-index 78b68311ec81..8c8b1c7497c5 100644
+index 9f7c1bf99526..d5371e4a9402 100644
 --- a/arch/arm64/include/asm/unistd32.h
 +++ b/arch/arm64/include/asm/unistd32.h
-@@ -911,6 +911,12 @@ __SYSCALL(__NR_set_mempolicy_home_node, sys_set_mempolicy_home_node)
- __SYSCALL(__NR_cachestat, sys_cachestat)
- #define __NR_fchmodat2 452
- __SYSCALL(__NR_fchmodat2, sys_fchmodat2)
-+#define __NR_process_ksm_enable 453
+@@ -919,6 +919,12 @@ __SYSCALL(__NR_futex_wake, sys_futex_wake)
+ __SYSCALL(__NR_futex_wait, sys_futex_wait)
+ #define __NR_futex_requeue 456
+ __SYSCALL(__NR_futex_requeue, sys_futex_requeue)
++#define __NR_process_ksm_enable 457
 +__SYSCALL(__NR_process_ksm_enable, sys_process_ksm_enable)
-+#define __NR_process_ksm_disable 454
++#define __NR_process_ksm_disable 458
 +__SYSCALL(__NR_process_ksm_disable, sys_process_ksm_disable)
-+#define __NR_process_ksm_status 455
++#define __NR_process_ksm_status 459
 +__SYSCALL(__NR_process_ksm_status, sys_process_ksm_status)
  
  /*
   * Please add new compat syscalls above this comment and update
-diff --git a/arch/ia64/kernel/syscalls/syscall.tbl b/arch/ia64/kernel/syscalls/syscall.tbl
-index 83d8609aec03..2c370b5695ef 100644
---- a/arch/ia64/kernel/syscalls/syscall.tbl
-+++ b/arch/ia64/kernel/syscalls/syscall.tbl
-@@ -373,3 +373,6 @@
- 450	common	set_mempolicy_home_node		sys_set_mempolicy_home_node
- 451	common	cachestat			sys_cachestat
- 452	common	fchmodat2			sys_fchmodat2
-+453	common	process_ksm_enable		sys_process_ksm_enable
-+454	common	process_ksm_disable		sys_process_ksm_disable
-+455	common	process_ksm_status		sys_process_ksm_status
 diff --git a/arch/m68k/kernel/syscalls/syscall.tbl b/arch/m68k/kernel/syscalls/syscall.tbl
-index 259ceb125367..346033761c74 100644
+index 7a4b780e82cb..af9ed3b87a74 100644
 --- a/arch/m68k/kernel/syscalls/syscall.tbl
 +++ b/arch/m68k/kernel/syscalls/syscall.tbl
-@@ -452,3 +452,6 @@
- 450	common	set_mempolicy_home_node		sys_set_mempolicy_home_node
- 451	common	cachestat			sys_cachestat
- 452	common	fchmodat2			sys_fchmodat2
-+453	common	process_ksm_enable		sys_process_ksm_enable
-+454	common	process_ksm_disable		sys_process_ksm_disable
-+455	common	process_ksm_status		sys_process_ksm_status
+@@ -456,3 +456,6 @@
+ 454	common	futex_wake			sys_futex_wake
+ 455	common	futex_wait			sys_futex_wait
+ 456	common	futex_requeue			sys_futex_requeue
++457	common	process_ksm_enable		sys_process_ksm_enable
++458	common	process_ksm_disable		sys_process_ksm_disable
++459	common	process_ksm_status		sys_process_ksm_status
 diff --git a/arch/microblaze/kernel/syscalls/syscall.tbl b/arch/microblaze/kernel/syscalls/syscall.tbl
-index a3798c2637fd..3d550ff347e4 100644
+index 5b6a0b02b7de..cc1990df8749 100644
 --- a/arch/microblaze/kernel/syscalls/syscall.tbl
 +++ b/arch/microblaze/kernel/syscalls/syscall.tbl
-@@ -458,3 +458,6 @@
- 450	common	set_mempolicy_home_node		sys_set_mempolicy_home_node
- 451	common	cachestat			sys_cachestat
- 452	common	fchmodat2			sys_fchmodat2
-+453	common	process_ksm_enable		sys_process_ksm_enable
-+454	common	process_ksm_disable		sys_process_ksm_disable
-+455	common	process_ksm_status		sys_process_ksm_status
+@@ -462,3 +462,6 @@
+ 454	common	futex_wake			sys_futex_wake
+ 455	common	futex_wait			sys_futex_wait
+ 456	common	futex_requeue			sys_futex_requeue
++457	common	process_ksm_enable		sys_process_ksm_enable
++458	common	process_ksm_disable		sys_process_ksm_disable
++459	common	process_ksm_status		sys_process_ksm_status
 diff --git a/arch/mips/kernel/syscalls/syscall_n32.tbl b/arch/mips/kernel/syscalls/syscall_n32.tbl
-index 152034b8e0a0..49bedc66cdd8 100644
+index a842b41c8e06..03d85043050a 100644
 --- a/arch/mips/kernel/syscalls/syscall_n32.tbl
 +++ b/arch/mips/kernel/syscalls/syscall_n32.tbl
-@@ -391,3 +391,6 @@
- 450	n32	set_mempolicy_home_node		sys_set_mempolicy_home_node
- 451	n32	cachestat			sys_cachestat
- 452	n32	fchmodat2			sys_fchmodat2
-+453	n32	process_ksm_enable		sys_process_ksm_enable
-+454	n32	process_ksm_disable		sys_process_ksm_disable
-+455	n32	process_ksm_status		sys_process_ksm_status
+@@ -395,3 +395,6 @@
+ 454	n32	futex_wake			sys_futex_wake
+ 455	n32	futex_wait			sys_futex_wait
+ 456	n32	futex_requeue			sys_futex_requeue
++457	n32	process_ksm_enable		sys_process_ksm_enable
++458	n32	process_ksm_disable		sys_process_ksm_disable
++459	n32	process_ksm_status		sys_process_ksm_status
 diff --git a/arch/mips/kernel/syscalls/syscall_n64.tbl b/arch/mips/kernel/syscalls/syscall_n64.tbl
-index cb5e757f6621..5c17a0a34f68 100644
+index 116ff501bf92..ee292f536f03 100644
 --- a/arch/mips/kernel/syscalls/syscall_n64.tbl
 +++ b/arch/mips/kernel/syscalls/syscall_n64.tbl
-@@ -367,3 +367,6 @@
- 450	common	set_mempolicy_home_node		sys_set_mempolicy_home_node
- 451	n64	cachestat			sys_cachestat
- 452	n64	fchmodat2			sys_fchmodat2
-+453	n64	process_ksm_enable		sys_process_ksm_enable
-+454	n64	process_ksm_disable		sys_process_ksm_disable
-+455	n64	process_ksm_status		sys_process_ksm_status
+@@ -371,3 +371,6 @@
+ 454	n64	futex_wake			sys_futex_wake
+ 455	n64	futex_wait			sys_futex_wait
+ 456	n64	futex_requeue			sys_futex_requeue
++457	n64	process_ksm_enable		sys_process_ksm_enable
++458	n64	process_ksm_disable		sys_process_ksm_disable
++459	n64	process_ksm_status		sys_process_ksm_status
 diff --git a/arch/mips/kernel/syscalls/syscall_o32.tbl b/arch/mips/kernel/syscalls/syscall_o32.tbl
-index 1a646813afdc..95dbd2c60dd8 100644
+index 525cc54bc63b..7f7c4dc97d94 100644
 --- a/arch/mips/kernel/syscalls/syscall_o32.tbl
 +++ b/arch/mips/kernel/syscalls/syscall_o32.tbl
-@@ -440,3 +440,6 @@
- 450	o32	set_mempolicy_home_node		sys_set_mempolicy_home_node
- 451	o32	cachestat			sys_cachestat
- 452	o32	fchmodat2			sys_fchmodat2
-+453	o32	process_ksm_enable		sys_process_ksm_enable
-+454	o32	process_ksm_disable		sys_process_ksm_disable
-+455	o32	process_ksm_status		sys_process_ksm_status
+@@ -444,3 +444,6 @@
+ 454	o32	futex_wake			sys_futex_wake
+ 455	o32	futex_wait			sys_futex_wait
+ 456	o32	futex_requeue			sys_futex_requeue
++457	o32	process_ksm_enable		sys_process_ksm_enable
++458	o32	process_ksm_disable		sys_process_ksm_disable
++459	o32	process_ksm_status		sys_process_ksm_status
 diff --git a/arch/parisc/kernel/syscalls/syscall.tbl b/arch/parisc/kernel/syscalls/syscall.tbl
-index e97c175b56f9..9b325ef36d52 100644
+index a47798fed54e..d1cc2fba2e27 100644
 --- a/arch/parisc/kernel/syscalls/syscall.tbl
 +++ b/arch/parisc/kernel/syscalls/syscall.tbl
-@@ -451,3 +451,6 @@
- 450	common	set_mempolicy_home_node		sys_set_mempolicy_home_node
- 451	common	cachestat			sys_cachestat
- 452	common	fchmodat2			sys_fchmodat2
-+453	common	process_ksm_enable		sys_process_ksm_enable
-+454	common	process_ksm_disable		sys_process_ksm_disable
-+455	common	process_ksm_status		sys_process_ksm_status
+@@ -455,3 +455,6 @@
+ 454	common	futex_wake			sys_futex_wake
+ 455	common	futex_wait			sys_futex_wait
+ 456	common	futex_requeue			sys_futex_requeue
++457	common	process_ksm_enable		sys_process_ksm_enable
++458	common	process_ksm_disable		sys_process_ksm_disable
++459	common	process_ksm_status		sys_process_ksm_status
 diff --git a/arch/powerpc/kernel/syscalls/syscall.tbl b/arch/powerpc/kernel/syscalls/syscall.tbl
-index 20e50586e8a2..b62ba0834869 100644
+index 7fab411378f2..59e7a7edd05f 100644
 --- a/arch/powerpc/kernel/syscalls/syscall.tbl
 +++ b/arch/powerpc/kernel/syscalls/syscall.tbl
-@@ -539,3 +539,6 @@
- 450 	nospu	set_mempolicy_home_node		sys_set_mempolicy_home_node
- 451	common	cachestat			sys_cachestat
- 452	common	fchmodat2			sys_fchmodat2
-+453	common	process_ksm_enable		sys_process_ksm_enable
-+454	common	process_ksm_disable		sys_process_ksm_disable
-+455	common	process_ksm_status		sys_process_ksm_status
+@@ -543,3 +543,6 @@
+ 454	common	futex_wake			sys_futex_wake
+ 455	common	futex_wait			sys_futex_wait
+ 456	common	futex_requeue			sys_futex_requeue
++457	common	process_ksm_enable		sys_process_ksm_enable
++458	common	process_ksm_disable		sys_process_ksm_disable
++459	common	process_ksm_status		sys_process_ksm_status
 diff --git a/arch/s390/kernel/syscalls/syscall.tbl b/arch/s390/kernel/syscalls/syscall.tbl
-index 0122cc156952..70165723f772 100644
+index 86fec9b080f6..fd13ef1622e9 100644
 --- a/arch/s390/kernel/syscalls/syscall.tbl
 +++ b/arch/s390/kernel/syscalls/syscall.tbl
-@@ -455,3 +455,6 @@
- 450  common	set_mempolicy_home_node	sys_set_mempolicy_home_node	sys_set_mempolicy_home_node
- 451  common	cachestat		sys_cachestat			sys_cachestat
- 452  common	fchmodat2		sys_fchmodat2			sys_fchmodat2
-+453  common	process_ksm_enable	sys_process_ksm_enable		sys_process_ksm_enable
-+454  common	process_ksm_disable	sys_process_ksm_disable		sys_process_ksm_disable
-+455  common	process_ksm_status	sys_process_ksm_status		sys_process_ksm_status
+@@ -459,3 +459,6 @@
+ 454  common	futex_wake		sys_futex_wake			sys_futex_wake
+ 455  common	futex_wait		sys_futex_wait			sys_futex_wait
+ 456  common	futex_requeue		sys_futex_requeue		sys_futex_requeue
++457  common	process_ksm_enable	sys_process_ksm_enable		sys_process_ksm_enable
++458  common	process_ksm_disable	sys_process_ksm_disable		sys_process_ksm_disable
++459  common	process_ksm_status	sys_process_ksm_status		sys_process_ksm_status
 diff --git a/arch/sh/kernel/syscalls/syscall.tbl b/arch/sh/kernel/syscalls/syscall.tbl
-index e90d585c4d3e..80769b880b37 100644
+index 363fae0fe9bf..c6679638e095 100644
 --- a/arch/sh/kernel/syscalls/syscall.tbl
 +++ b/arch/sh/kernel/syscalls/syscall.tbl
-@@ -455,3 +455,6 @@
- 450	common	set_mempolicy_home_node		sys_set_mempolicy_home_node
- 451	common	cachestat			sys_cachestat
- 452	common	fchmodat2			sys_fchmodat2
-+453	common	process_ksm_enable		sys_process_ksm_enable
-+454	common	process_ksm_disable		sys_process_ksm_disable
-+455	common	process_ksm_status		sys_process_ksm_status
+@@ -459,3 +459,6 @@
+ 454	common	futex_wake			sys_futex_wake
+ 455	common	futex_wait			sys_futex_wait
+ 456	common	futex_requeue			sys_futex_requeue
++457	common	process_ksm_enable		sys_process_ksm_enable
++458	common	process_ksm_disable		sys_process_ksm_disable
++459	common	process_ksm_status		sys_process_ksm_status
 diff --git a/arch/sparc/kernel/syscalls/syscall.tbl b/arch/sparc/kernel/syscalls/syscall.tbl
-index 4ed06c71c43f..fb3514cce0e7 100644
+index 7bcaa3d5ea44..df421ad3a543 100644
 --- a/arch/sparc/kernel/syscalls/syscall.tbl
 +++ b/arch/sparc/kernel/syscalls/syscall.tbl
-@@ -498,3 +498,6 @@
- 450	common	set_mempolicy_home_node		sys_set_mempolicy_home_node
- 451	common	cachestat			sys_cachestat
- 452	common	fchmodat2			sys_fchmodat2
-+453	common	process_ksm_enable		sys_process_ksm_enable
-+454	common	process_ksm_disable		sys_process_ksm_disable
-+455	common	process_ksm_status		sys_process_ksm_status
+@@ -502,3 +502,6 @@
+ 454	common	futex_wake			sys_futex_wake
+ 455	common	futex_wait			sys_futex_wait
+ 456	common	futex_requeue			sys_futex_requeue
++457	common	process_ksm_enable		sys_process_ksm_enable
++458	common	process_ksm_disable		sys_process_ksm_disable
++459	common	process_ksm_status		sys_process_ksm_status
 diff --git a/arch/x86/entry/syscalls/syscall_32.tbl b/arch/x86/entry/syscalls/syscall_32.tbl
-index 2d0b1bd866ea..80a57f6a8981 100644
+index c8fac5205803..6f724cfddf13 100644
 --- a/arch/x86/entry/syscalls/syscall_32.tbl
 +++ b/arch/x86/entry/syscalls/syscall_32.tbl
-@@ -457,3 +457,6 @@
- 450	i386	set_mempolicy_home_node		sys_set_mempolicy_home_node
- 451	i386	cachestat		sys_cachestat
- 452	i386	fchmodat2		sys_fchmodat2
-+453	i386	process_ksm_enable		sys_process_ksm_enable
-+454	i386	process_ksm_disable		sys_process_ksm_disable
-+455	i386	process_ksm_status		sys_process_ksm_status
+@@ -461,3 +461,6 @@
+ 454	i386	futex_wake		sys_futex_wake
+ 455	i386	futex_wait		sys_futex_wait
+ 456	i386	futex_requeue		sys_futex_requeue
++457	i386	process_ksm_enable		sys_process_ksm_enable
++458	i386	process_ksm_disable		sys_process_ksm_disable
++459	i386	process_ksm_status		sys_process_ksm_status
 diff --git a/arch/x86/entry/syscalls/syscall_64.tbl b/arch/x86/entry/syscalls/syscall_64.tbl
-index 1d6eee30eceb..38faca76e9a0 100644
+index 8cb8bf68721c..57ed2ebcaac9 100644
 --- a/arch/x86/entry/syscalls/syscall_64.tbl
 +++ b/arch/x86/entry/syscalls/syscall_64.tbl
-@@ -375,6 +375,9 @@
- 451	common	cachestat		sys_cachestat
- 452	common	fchmodat2		sys_fchmodat2
- 453	64	map_shadow_stack	sys_map_shadow_stack
-+454	common	process_ksm_enable	sys_process_ksm_enable
-+455	common	process_ksm_disable	sys_process_ksm_disable
-+456	common	process_ksm_status	sys_process_ksm_status
+@@ -378,6 +378,9 @@
+ 454	common	futex_wake		sys_futex_wake
+ 455	common	futex_wait		sys_futex_wait
+ 456	common	futex_requeue		sys_futex_requeue
++457	common	process_ksm_enable	sys_process_ksm_enable
++458	common	process_ksm_disable	sys_process_ksm_disable
++459	common	process_ksm_status	sys_process_ksm_status
  
  #
  # Due to a historical design error, certain syscalls are numbered differently
 diff --git a/arch/xtensa/kernel/syscalls/syscall.tbl b/arch/xtensa/kernel/syscalls/syscall.tbl
-index fc1a4f3c81d9..83f5032b2526 100644
+index 06eefa9c1458..d497d57c32f9 100644
 --- a/arch/xtensa/kernel/syscalls/syscall.tbl
 +++ b/arch/xtensa/kernel/syscalls/syscall.tbl
-@@ -423,3 +423,6 @@
- 450	common	set_mempolicy_home_node		sys_set_mempolicy_home_node
- 451	common	cachestat			sys_cachestat
- 452	common	fchmodat2			sys_fchmodat2
-+453	common	process_ksm_enable		sys_process_ksm_enable
-+454	common	process_ksm_disable		sys_process_ksm_disable
-+455	common	process_ksm_status		sys_process_ksm_status
+@@ -427,3 +427,6 @@
+ 454	common	futex_wake			sys_futex_wake
+ 455	common	futex_wait			sys_futex_wait
+ 456	common	futex_requeue			sys_futex_requeue
++457	common	process_ksm_enable		sys_process_ksm_enable
++458	common	process_ksm_disable		sys_process_ksm_disable
++459	common	process_ksm_status		sys_process_ksm_status
 diff --git a/include/linux/syscalls.h b/include/linux/syscalls.h
-index 22bc6bc147f8..da013ad43df9 100644
+index fd9d12de7e92..9f29c60c50a6 100644
 --- a/include/linux/syscalls.h
 +++ b/include/linux/syscalls.h
-@@ -799,6 +799,9 @@ asmlinkage long sys_madvise(unsigned long start, size_t len, int behavior);
+@@ -808,6 +808,9 @@ asmlinkage long sys_madvise(unsigned long start, size_t len, int behavior);
  asmlinkage long sys_process_madvise(int pidfd, const struct iovec __user *vec,
  			size_t vlen, int behavior, unsigned int flags);
  asmlinkage long sys_process_mrelease(int pidfd, unsigned int flags);
@@ -17093,33 +18204,33 @@ index 22bc6bc147f8..da013ad43df9 100644
  			unsigned long prot, unsigned long pgoff,
  			unsigned long flags);
 diff --git a/include/uapi/asm-generic/unistd.h b/include/uapi/asm-generic/unistd.h
-index abe087c53b4b..e393422e2983 100644
+index 756b013fb832..205e9ee764ae 100644
 --- a/include/uapi/asm-generic/unistd.h
 +++ b/include/uapi/asm-generic/unistd.h
-@@ -823,8 +823,17 @@ __SYSCALL(__NR_cachestat, sys_cachestat)
- #define __NR_fchmodat2 452
- __SYSCALL(__NR_fchmodat2, sys_fchmodat2)
+@@ -829,8 +829,17 @@ __SYSCALL(__NR_futex_wait, sys_futex_wait)
+ #define __NR_futex_requeue 456
+ __SYSCALL(__NR_futex_requeue, sys_futex_requeue)
  
-+#define __NR_process_ksm_enable 453
++#define __NR_process_ksm_enable 457
 +__SYSCALL(__NR_process_ksm_enable, sys_process_ksm_enable)
 +
-+#define __NR_process_ksm_disable 454
++#define __NR_process_ksm_disable 458
 +__SYSCALL(__NR_process_ksm_disable, sys_process_ksm_disable)
 +
-+#define __NR_process_ksm_status 455
++#define __NR_process_ksm_status 459
 +__SYSCALL(__NR_process_ksm_status, sys_process_ksm_status)
 +
  #undef __NR_syscalls
--#define __NR_syscalls 453
-+#define __NR_syscalls 456
+-#define __NR_syscalls 457
++#define __NR_syscalls 460
  
  /*
   * 32 bit systems traditionally used different
 diff --git a/kernel/sys.c b/kernel/sys.c
-index 7a4ae6d5aecd..8e0080338bfc 100644
+index e219fcfa112d..97cec2f7ae29 100644
 --- a/kernel/sys.c
 +++ b/kernel/sys.c
-@@ -2751,6 +2751,153 @@ SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
+@@ -2750,6 +2750,153 @@ SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
  	return error;
  }
  
@@ -17274,10 +18385,10 @@ index 7a4ae6d5aecd..8e0080338bfc 100644
  		struct getcpu_cache __user *, unused)
  {
 diff --git a/kernel/sys_ni.c b/kernel/sys_ni.c
-index e137c1385c56..2d9772d11c92 100644
+index 9a846439b36a..30962445ad3a 100644
 --- a/kernel/sys_ni.c
 +++ b/kernel/sys_ni.c
-@@ -184,6 +184,9 @@ COND_SYSCALL(mincore);
+@@ -185,6 +185,9 @@ COND_SYSCALL(mincore);
  COND_SYSCALL(madvise);
  COND_SYSCALL(process_madvise);
  COND_SYSCALL(process_mrelease);
@@ -17290,10 +18401,387 @@ index e137c1385c56..2d9772d11c92 100644
 -- 
 2.43.0
 
-From b4adba03ab1d0a78d7d8bda1ebf6707e46a5009a Mon Sep 17 00:00:00 2001
+From b48330a113d8514f2289b4d0429fc407fd8c5f21 Mon Sep 17 00:00:00 2001
 From: Peter Jung <admin@ptr1337.dev>
-Date: Sat, 16 Dec 2023 09:03:26 +0100
-Subject: [PATCH 7/7] zstd
+Date: Fri, 22 Dec 2023 17:55:12 +0100
+Subject: [PATCH 7/8] sched
+
+Signed-off-by: Peter Jung <admin@ptr1337.dev>
+---
+ include/linux/sched.h |   2 +-
+ kernel/sched/debug.c  |  11 ++-
+ kernel/sched/fair.c   | 180 ++++++++++++++++++------------------------
+ kernel/sched/sched.h  |   1 +
+ 4 files changed, 87 insertions(+), 107 deletions(-)
+
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index 292c31697248..cd56d4018527 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -553,7 +553,7 @@ struct sched_entity {
+ 	struct load_weight		load;
+ 	struct rb_node			run_node;
+ 	u64				deadline;
+-	u64				min_deadline;
++	u64				min_vruntime;
+ 
+ 	struct list_head		group_node;
+ 	unsigned int			on_rq;
+diff --git a/kernel/sched/debug.c b/kernel/sched/debug.c
+index 4580a450700e..168eecc209b4 100644
+--- a/kernel/sched/debug.c
++++ b/kernel/sched/debug.c
+@@ -628,8 +628,8 @@ static void print_rq(struct seq_file *m, struct rq *rq, int rq_cpu)
+ 
+ void print_cfs_rq(struct seq_file *m, int cpu, struct cfs_rq *cfs_rq)
+ {
+-	s64 left_vruntime = -1, min_vruntime, right_vruntime = -1, spread;
+-	struct sched_entity *last, *first;
++	s64 left_vruntime = -1, min_vruntime, right_vruntime = -1, left_deadline = -1, spread;
++	struct sched_entity *last, *first, *root;
+ 	struct rq *rq = cpu_rq(cpu);
+ 	unsigned long flags;
+ 
+@@ -644,15 +644,20 @@ void print_cfs_rq(struct seq_file *m, int cpu, struct cfs_rq *cfs_rq)
+ 			SPLIT_NS(cfs_rq->exec_clock));
+ 
+ 	raw_spin_rq_lock_irqsave(rq, flags);
++	root = __pick_root_entity(cfs_rq);
++	if (root)
++		left_vruntime = root->min_vruntime;
+ 	first = __pick_first_entity(cfs_rq);
+ 	if (first)
+-		left_vruntime = first->vruntime;
++		left_deadline = first->deadline;
+ 	last = __pick_last_entity(cfs_rq);
+ 	if (last)
+ 		right_vruntime = last->vruntime;
+ 	min_vruntime = cfs_rq->min_vruntime;
+ 	raw_spin_rq_unlock_irqrestore(rq, flags);
+ 
++	SEQ_printf(m, "  .%-30s: %Ld.%06ld\n", "left_deadline",
++			SPLIT_NS(left_deadline));
+ 	SEQ_printf(m, "  .%-30s: %Ld.%06ld\n", "left_vruntime",
+ 			SPLIT_NS(left_vruntime));
+ 	SEQ_printf(m, "  .%-30s: %Ld.%06ld\n", "min_vruntime",
+diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
+index 6c58fda40043..b847c887d7c5 100644
+--- a/kernel/sched/fair.c
++++ b/kernel/sched/fair.c
+@@ -564,7 +564,11 @@ static inline u64 min_vruntime(u64 min_vruntime, u64 vruntime)
+ static inline bool entity_before(const struct sched_entity *a,
+ 				 const struct sched_entity *b)
+ {
+-	return (s64)(a->vruntime - b->vruntime) < 0;
++	/*
++	 * Tiebreak on vruntime seems unnecessary since it can
++	 * hardly happen.
++	 */
++	return (s64)(a->deadline - b->deadline) < 0;
+ }
+ 
+ static inline s64 entity_key(struct cfs_rq *cfs_rq, struct sched_entity *se)
+@@ -733,7 +737,7 @@ static void update_entity_lag(struct cfs_rq *cfs_rq, struct sched_entity *se)
+  * Note: using 'avg_vruntime() > se->vruntime' is inacurate due
+  *       to the loss in precision caused by the division.
+  */
+-int entity_eligible(struct cfs_rq *cfs_rq, struct sched_entity *se)
++static int vruntime_eligible(struct cfs_rq *cfs_rq, u64 vruntime)
+ {
+ 	struct sched_entity *curr = cfs_rq->curr;
+ 	s64 avg = cfs_rq->avg_vruntime;
+@@ -746,7 +750,12 @@ int entity_eligible(struct cfs_rq *cfs_rq, struct sched_entity *se)
+ 		load += weight;
+ 	}
+ 
+-	return avg >= entity_key(cfs_rq, se) * load;
++	return avg >= (s64)(vruntime - cfs_rq->min_vruntime) * load;
++}
++
++int entity_eligible(struct cfs_rq *cfs_rq, struct sched_entity *se)
++{
++	return vruntime_eligible(cfs_rq, se->vruntime);
+ }
+ 
+ static u64 __update_min_vruntime(struct cfs_rq *cfs_rq, u64 vruntime)
+@@ -765,9 +774,8 @@ static u64 __update_min_vruntime(struct cfs_rq *cfs_rq, u64 vruntime)
+ 
+ static void update_min_vruntime(struct cfs_rq *cfs_rq)
+ {
+-	struct sched_entity *se = __pick_first_entity(cfs_rq);
++	struct sched_entity *se = __pick_root_entity(cfs_rq);
+ 	struct sched_entity *curr = cfs_rq->curr;
+-
+ 	u64 vruntime = cfs_rq->min_vruntime;
+ 
+ 	if (curr) {
+@@ -779,9 +787,9 @@ static void update_min_vruntime(struct cfs_rq *cfs_rq)
+ 
+ 	if (se) {
+ 		if (!curr)
+-			vruntime = se->vruntime;
++			vruntime = se->min_vruntime;
+ 		else
+-			vruntime = min_vruntime(vruntime, se->vruntime);
++			vruntime = min_vruntime(vruntime, se->min_vruntime);
+ 	}
+ 
+ 	/* ensure we never gain time by being placed backwards. */
+@@ -794,34 +802,34 @@ static inline bool __entity_less(struct rb_node *a, const struct rb_node *b)
+ 	return entity_before(__node_2_se(a), __node_2_se(b));
+ }
+ 
+-#define deadline_gt(field, lse, rse) ({ (s64)((lse)->field - (rse)->field) > 0; })
++#define vruntime_gt(field, lse, rse) ({ (s64)((lse)->field - (rse)->field) > 0; })
+ 
+-static inline void __update_min_deadline(struct sched_entity *se, struct rb_node *node)
++static inline void __min_vruntime_update(struct sched_entity *se, struct rb_node *node)
+ {
+ 	if (node) {
+ 		struct sched_entity *rse = __node_2_se(node);
+-		if (deadline_gt(min_deadline, se, rse))
+-			se->min_deadline = rse->min_deadline;
++		if (vruntime_gt(min_vruntime, se, rse))
++			se->min_vruntime = rse->min_vruntime;
+ 	}
+ }
+ 
+ /*
+- * se->min_deadline = min(se->deadline, left->min_deadline, right->min_deadline)
++ * se->min_vruntime = min(se->vruntime, {left,right}->min_vruntime)
+  */
+-static inline bool min_deadline_update(struct sched_entity *se, bool exit)
++static inline bool min_vruntime_update(struct sched_entity *se, bool exit)
+ {
+-	u64 old_min_deadline = se->min_deadline;
++	u64 old_min_vruntime = se->min_vruntime;
+ 	struct rb_node *node = &se->run_node;
+ 
+-	se->min_deadline = se->deadline;
+-	__update_min_deadline(se, node->rb_right);
+-	__update_min_deadline(se, node->rb_left);
++	se->min_vruntime = se->vruntime;
++	__min_vruntime_update(se, node->rb_right);
++	__min_vruntime_update(se, node->rb_left);
+ 
+-	return se->min_deadline == old_min_deadline;
++	return se->min_vruntime == old_min_vruntime;
+ }
+ 
+-RB_DECLARE_CALLBACKS(static, min_deadline_cb, struct sched_entity,
+-		     run_node, min_deadline, min_deadline_update);
++RB_DECLARE_CALLBACKS(static, min_vruntime_cb, struct sched_entity,
++		     run_node, min_vruntime, min_vruntime_update);
+ 
+ /*
+  * Enqueue an entity into the rb-tree:
+@@ -829,18 +837,28 @@ RB_DECLARE_CALLBACKS(static, min_deadline_cb, struct sched_entity,
+ static void __enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
+ {
+ 	avg_vruntime_add(cfs_rq, se);
+-	se->min_deadline = se->deadline;
++	se->min_vruntime = se->vruntime;
+ 	rb_add_augmented_cached(&se->run_node, &cfs_rq->tasks_timeline,
+-				__entity_less, &min_deadline_cb);
++				__entity_less, &min_vruntime_cb);
+ }
+ 
+ static void __dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
+ {
+ 	rb_erase_augmented_cached(&se->run_node, &cfs_rq->tasks_timeline,
+-				  &min_deadline_cb);
++				  &min_vruntime_cb);
+ 	avg_vruntime_sub(cfs_rq, se);
+ }
+ 
++struct sched_entity *__pick_root_entity(struct cfs_rq *cfs_rq)
++{
++	struct rb_node *root = cfs_rq->tasks_timeline.rb_root.rb_node;
++
++	if (!root)
++		return NULL;
++
++	return __node_2_se(root);
++}
++
+ struct sched_entity *__pick_first_entity(struct cfs_rq *cfs_rq)
+ {
+ 	struct rb_node *left = rb_first_cached(&cfs_rq->tasks_timeline);
+@@ -863,23 +881,29 @@ struct sched_entity *__pick_first_entity(struct cfs_rq *cfs_rq)
+  *     with the earliest virtual deadline.
+  *
+  * We can do this in O(log n) time due to an augmented RB-tree. The
+- * tree keeps the entries sorted on service, but also functions as a
+- * heap based on the deadline by keeping:
++ * tree keeps the entries sorted on deadline, but also functions as a
++ * heap based on the vruntime by keeping:
+  *
+- *  se->min_deadline = min(se->deadline, se->{left,right}->min_deadline)
++ *  se->min_vruntime = min(se->vruntime, se->{left,right}->min_vruntime)
+  *
+- * Which allows an EDF like search on (sub)trees.
++ * Which allows tree pruning through eligibility.
+  */
+-static struct sched_entity *__pick_eevdf(struct cfs_rq *cfs_rq)
++static struct sched_entity *pick_eevdf(struct cfs_rq *cfs_rq)
+ {
+ 	struct rb_node *node = cfs_rq->tasks_timeline.rb_root.rb_node;
++	struct sched_entity *se = __pick_first_entity(cfs_rq);
+ 	struct sched_entity *curr = cfs_rq->curr;
+ 	struct sched_entity *best = NULL;
+-	struct sched_entity *best_left = NULL;
++
++	/*
++	 * We can safely skip eligibility check if there is only one entity
++	 * in this cfs_rq, saving some cycles.
++	 */
++	if (cfs_rq->nr_running == 1)
++		return curr && curr->on_rq ? curr : se;
+ 
+ 	if (curr && (!curr->on_rq || !entity_eligible(cfs_rq, curr)))
+ 		curr = NULL;
+-	best = curr;
+ 
+ 	/*
+ 	 * Once selected, run a task until it either becomes non-eligible or
+@@ -888,95 +912,45 @@ static struct sched_entity *__pick_eevdf(struct cfs_rq *cfs_rq)
+ 	if (sched_feat(RUN_TO_PARITY) && curr && curr->vlag == curr->deadline)
+ 		return curr;
+ 
++	/* Pick the leftmost entity if it's eligible */
++	if (se && entity_eligible(cfs_rq, se)) {
++		best = se;
++		goto found;
++	}
++
++	/* Heap search for the EEVD entity */
+ 	while (node) {
+-		struct sched_entity *se = __node_2_se(node);
++		struct rb_node *left = node->rb_left;
+ 
+ 		/*
+-		 * If this entity is not eligible, try the left subtree.
++		 * Eligible entities in left subtree are always better
++		 * choices, since they have earlier deadlines.
+ 		 */
+-		if (!entity_eligible(cfs_rq, se)) {
+-			node = node->rb_left;
++		if (left && vruntime_eligible(cfs_rq,
++					__node_2_se(left)->min_vruntime)) {
++			node = left;
+ 			continue;
+ 		}
+ 
+-		/*
+-		 * Now we heap search eligible trees for the best (min_)deadline
+-		 */
+-		if (!best || deadline_gt(deadline, best, se))
+-			best = se;
++		se = __node_2_se(node);
+ 
+ 		/*
+-		 * Every se in a left branch is eligible, keep track of the
+-		 * branch with the best min_deadline
++		 * The left subtree either is empty or has no eligible
++		 * entity, so check the current node since it is the one
++		 * with earliest deadline that might be eligible.
+ 		 */
+-		if (node->rb_left) {
+-			struct sched_entity *left = __node_2_se(node->rb_left);
+-
+-			if (!best_left || deadline_gt(min_deadline, best_left, left))
+-				best_left = left;
+-
+-			/*
+-			 * min_deadline is in the left branch. rb_left and all
+-			 * descendants are eligible, so immediately switch to the second
+-			 * loop.
+-			 */
+-			if (left->min_deadline == se->min_deadline)
+-				break;
+-		}
+-
+-		/* min_deadline is at this node, no need to look right */
+-		if (se->deadline == se->min_deadline)
++		if (entity_eligible(cfs_rq, se)) {
++			best = se;
+ 			break;
+-
+-		/* else min_deadline is in the right branch. */
+-		node = node->rb_right;
+-	}
+-
+-	/*
+-	 * We ran into an eligible node which is itself the best.
+-	 * (Or nr_running == 0 and both are NULL)
+-	 */
+-	if (!best_left || (s64)(best_left->min_deadline - best->deadline) > 0)
+-		return best;
+-
+-	/*
+-	 * Now best_left and all of its children are eligible, and we are just
+-	 * looking for deadline == min_deadline
+-	 */
+-	node = &best_left->run_node;
+-	while (node) {
+-		struct sched_entity *se = __node_2_se(node);
+-
+-		/* min_deadline is the current node */
+-		if (se->deadline == se->min_deadline)
+-			return se;
+-
+-		/* min_deadline is in the left branch */
+-		if (node->rb_left &&
+-		    __node_2_se(node->rb_left)->min_deadline == se->min_deadline) {
+-			node = node->rb_left;
+-			continue;
+ 		}
+ 
+-		/* else min_deadline is in the right branch */
+ 		node = node->rb_right;
+ 	}
+-	return NULL;
+-}
+-
+-static struct sched_entity *pick_eevdf(struct cfs_rq *cfs_rq)
+-{
+-	struct sched_entity *se = __pick_eevdf(cfs_rq);
+-
+-	if (!se) {
+-		struct sched_entity *left = __pick_first_entity(cfs_rq);
+-		if (left) {
+-			pr_err("EEVDF scheduling fail, picking leftmost\n");
+-			return left;
+-		}
+-	}
++found:
++	if (!best || (curr && entity_before(curr, best)))
++		best = curr;
+ 
+-	return se;
++	return best;
+ }
+ 
+ #ifdef CONFIG_SCHED_DEBUG
+diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
+index 2e5a95486a42..539c7e763f15 100644
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -2822,6 +2822,7 @@ DEFINE_LOCK_GUARD_2(double_rq_lock, struct rq,
+ 		    double_rq_lock(_T->lock, _T->lock2),
+ 		    double_rq_unlock(_T->lock, _T->lock2))
+ 
++extern struct sched_entity *__pick_root_entity(struct cfs_rq *cfs_rq);
+ extern struct sched_entity *__pick_first_entity(struct cfs_rq *cfs_rq);
+ extern struct sched_entity *__pick_last_entity(struct cfs_rq *cfs_rq);
+ 
+-- 
+2.43.0
+
+From cbd121a0479c0df4cb0cf85029bc6a7af42f961b Mon Sep 17 00:00:00 2001
+From: Peter Jung <admin@ptr1337.dev>
+Date: Fri, 22 Dec 2023 17:55:22 +0100
+Subject: [PATCH 8/8] zstd
 
 Signed-off-by: Peter Jung <admin@ptr1337.dev>
 ---
